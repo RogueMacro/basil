@@ -16,10 +16,21 @@ impl IR {
 
         for item in ast.items {
             let item = match item {
-                AstItem::Function { name, body, .. } => Item::Function {
-                    name,
-                    bb: BlockBuilder::new().build(body),
-                },
+                AstItem::Function {
+                    name, body, args, ..
+                } => {
+                    let mut block_builder = BlockBuilder::new();
+                    let args = args
+                        .iter()
+                        .map(|(arg, _)| block_builder.get_or_insert_vreg(arg))
+                        .collect();
+
+                    Item::Function {
+                        name,
+                        args,
+                        bb: block_builder.build(body),
+                    }
+                }
             };
 
             items.push(item);
@@ -54,7 +65,10 @@ impl BlockBuilder {
 
                     let dest = self.get_or_insert_vreg(var);
                     let src = self.unroll_expr(&expr, Some(dest));
-                    self.ops.push(Op::Assign { src, dest });
+
+                    if src != SourceVal::VReg(dest) {
+                        self.ops.push(Op::Assign { src, dest });
+                    }
                 }
                 Statement::Return(expr) => {
                     let value = self.unroll_expr(&expr, None);
@@ -117,9 +131,18 @@ impl BlockBuilder {
                 SourceVal::VReg(dest)
             }
             ExprType::FnCall(function, args) => {
+                let args = args
+                    .iter()
+                    .map(|e| {
+                        let src = self.unroll_expr(e, None);
+                        self.src_to_vreg(src)
+                    })
+                    .collect();
+
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
                 self.ops.push(Op::Call {
                     function: function.clone(),
+                    args,
                     dest: Some(dest),
                 });
 

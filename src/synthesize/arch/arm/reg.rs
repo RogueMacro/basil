@@ -153,13 +153,18 @@ const CALLER_SAVED_REGS: &[Register] = &[
 /// # Returns
 ///
 /// The generated allocation map ([Allocator])
-pub fn allocate(bb: &BasicBlock) -> Allocator {
+pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     // TODO: Use callee-saved registers
 
     // General-purpose caller-saved registers
     let mut phys_regs: Vec<Register> = CALLER_SAVED_REGS.to_vec();
 
-    let mut location_map = BTreeMap::new();
+    let mut location_map: BTreeMap<VirtualReg, Location> = args
+        .iter()
+        .enumerate()
+        .map(|(i, &vreg)| (vreg, Location::Register(Register::from_usize(i).unwrap())))
+        .collect();
+
     let mut lifetimes = bb.lifetimes();
     let lifetimes_imm = lifetimes.clone();
 
@@ -427,7 +432,7 @@ mod tests {
 
     #[test]
     fn allocate_empty_block_has_zero_stack_size() {
-        let alloc = allocate(&make_bb(vec![]));
+        let alloc = allocate(&make_bb(vec![]), &[]);
         assert_eq!(alloc.stack_size(), u12::new(0));
     }
 
@@ -444,7 +449,7 @@ mod tests {
                 value: SourceVal::VReg(VirtualReg(0)),
             },
         ]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         assert_eq!(alloc.stack_size(), u12::new(0));
         let g0 = alloc.map(VirtualReg(0), 0);
         let g1 = alloc.map(VirtualReg(0), 1);
@@ -475,7 +480,7 @@ mod tests {
                 value: SourceVal::VReg(VirtualReg(2)),
             },
         ]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         assert_eq!(alloc.stack_size(), u12::new(0));
         let g0 = alloc.map(VirtualReg(0), 2);
         let g1 = alloc.map(VirtualReg(1), 2);
@@ -499,7 +504,7 @@ mod tests {
                 value: SourceVal::VReg(VirtualReg(0)),
             },
         ]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         let reg = alloc.map(VirtualReg(0), 0).inner_reg();
         assert!(CALLER_SAVED_REGS.contains(&reg));
     }
@@ -517,7 +522,7 @@ mod tests {
                 value: SourceVal::VReg(VirtualReg(0)),
             },
         ]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         assert!(alloc.stack_save(0).is_none());
         assert!(alloc.stack_save(1).is_none());
     }
@@ -532,13 +537,14 @@ mod tests {
             },
             Operation::Call {
                 function: String::from("foo"),
+                args: vec![],
                 dest: None,
             },
             Operation::Return {
                 value: SourceVal::VReg(VirtualReg(0)),
             },
         ]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         let saves = alloc.stack_save(1);
         assert!(saves.is_some());
         assert!(!saves.unwrap().is_empty());
@@ -549,9 +555,10 @@ mod tests {
         // No vregs have been assigned before the Call, so nothing needs saving.
         let bb = make_bb(vec![Operation::Call {
             function: String::from("foo"),
+            args: vec![],
             dest: None,
         }]);
-        let alloc = allocate(&bb);
+        let alloc = allocate(&bb, &[]);
         assert!(alloc.stack_save(0).is_none());
     }
 
@@ -560,7 +567,7 @@ mod tests {
     #[test]
     #[should_panic]
     fn allocator_map_panics_for_unknown_vreg() {
-        let alloc = allocate(&make_bb(vec![]));
+        let alloc = allocate(&make_bb(vec![]), &[]);
         alloc.map(VirtualReg(99), 0);
     }
 }

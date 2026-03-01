@@ -77,10 +77,8 @@ impl<'ast> Analyzer<'ast> {
             ..
         } = item;
 
-        if let Some(args) = args {
-            for (arg, typ) in args {
-                self.variables.insert(arg.to_owned(), typ.clone());
-            }
+        for (arg, typ) in args {
+            self.variables.insert(arg.to_owned(), typ.clone());
         }
 
         let mut has_return = false;

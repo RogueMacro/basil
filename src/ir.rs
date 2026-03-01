@@ -10,7 +10,11 @@ pub struct IR {
 }
 
 pub enum Item {
-    Function { name: String, bb: BasicBlock },
+    Function {
+        name: String,
+        args: Vec<VirtualReg>,
+        bb: BasicBlock,
+    },
 }
 
 pub struct BasicBlock {
@@ -94,6 +98,7 @@ pub enum Operation {
     },
     Call {
         function: String,
+        args: Vec<VirtualReg>,
         dest: Option<VirtualReg>,
     },
 }
@@ -126,14 +131,19 @@ impl Operation {
             }
 
             Operation::Return { value } => push(value.reg()),
-            Operation::Call { dest, .. } => push(*dest),
+            Operation::Call { dest, args, .. } => {
+                push(*dest);
+                for vreg in args {
+                    push(Some(*vreg));
+                }
+            }
         }
     }
 }
 
 /// A value that can be used in an operation as a source, either an immediate operand or a
 /// register.
-#[derive(Clone, Copy)]
+#[derive(Clone, Copy, PartialEq)]
 pub enum SourceVal {
     Immediate(i64),
     VReg(VirtualReg),
@@ -146,43 +156,6 @@ impl SourceVal {
             Self::VReg(vreg) => Some(*vreg),
             _ => None,
         }
-    }
-}
-
-impl fmt::Display for IR {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for item in self.items.iter() {
-            let Item::Function { name, bb } = item;
-            writeln!(f, "fn {}() {{", name)?;
-
-            for op in bb.ops.iter() {
-                match op {
-                    Operation::Assign { src, dest } => writeln!(f, "    let {} = {}", dest, src)?,
-                    Operation::Add { a, b, dest } => writeln!(f, "    {} = {} + {}", dest, a, b)?,
-                    Operation::Subtract { a, b, dest } => {
-                        writeln!(f, "    {} = {} - {}", dest, a, b)?
-                    }
-                    Operation::Multiply { a, b, dest } => {
-                        writeln!(f, "    {} = {} * {}", dest, a, b)?
-                    }
-                    Operation::Divide { a, b, dest } => {
-                        writeln!(f, "    {} = {} / {}", dest, a, b)?
-                    }
-                    Operation::Return { value } => writeln!(f, "    ret {}", value)?,
-                    Operation::Call { function, dest } => {
-                        if let Some(dest) = dest {
-                            writeln!(f, "    {} = call {}()", dest, function)?
-                        } else {
-                            writeln!(f, "    call {}()", function)?
-                        }
-                    }
-                }
-            }
-
-            write!(f, "}}")?;
-        }
-
-        Ok(())
     }
 }
 
@@ -201,5 +174,65 @@ pub struct VirtualReg(pub u32);
 impl fmt::Display for VirtualReg {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "%{}", self.0)
+    }
+}
+
+impl fmt::Display for IR {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for item in self.items.iter() {
+            let Item::Function { name, args, bb } = item;
+            write!(f, "fn {}(", name)?;
+            for reg in args.iter().take(1) {
+                write!(f, "{}", reg)?;
+            }
+
+            for reg in args.iter().skip(1) {
+                write!(f, ", {}", reg)?;
+            }
+
+            writeln!(f, ") {{")?;
+
+            for op in bb.ops.iter() {
+                match op {
+                    Operation::Assign { src, dest } => writeln!(f, "    let {} = {}", dest, src)?,
+                    Operation::Add { a, b, dest } => writeln!(f, "    {} = {} + {}", dest, a, b)?,
+                    Operation::Subtract { a, b, dest } => {
+                        writeln!(f, "    {} = {} - {}", dest, a, b)?
+                    }
+                    Operation::Multiply { a, b, dest } => {
+                        writeln!(f, "    {} = {} * {}", dest, a, b)?
+                    }
+                    Operation::Divide { a, b, dest } => {
+                        writeln!(f, "    {} = {} / {}", dest, a, b)?
+                    }
+                    Operation::Return { value } => writeln!(f, "    ret {}", value)?,
+                    Operation::Call {
+                        function,
+                        args,
+                        dest,
+                    } => {
+                        if let Some(dest) = dest {
+                            write!(f, "    {} = call {}(", dest, function)?
+                        } else {
+                            write!(f, "    call {}(", function)?
+                        }
+
+                        for arg in args.iter().take(1) {
+                            write!(f, "{}", arg)?;
+                        }
+
+                        for arg in args.iter().skip(1) {
+                            write!(f, ", {}", arg)?;
+                        }
+
+                        writeln!(f, ")")?
+                    }
+                }
+            }
+
+            writeln!(f, "}}\n")?;
+        }
+
+        Ok(())
     }
 }

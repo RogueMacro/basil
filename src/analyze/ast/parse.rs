@@ -84,11 +84,7 @@ impl Parser {
             "expected opening parenthesis",
         )?;
 
-        let args = if let Some((Token::Ident(_), range)) = self.lexer.current() {
-            Some(self.parse_decl_args()?)
-        } else {
-            None
-        };
+        let args = self.parse_decl_args()?;
 
         let decl_end = self.lexer.cur_token_start();
 

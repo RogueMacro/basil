@@ -1,16 +1,13 @@
 use std::{ops::Range, rc::Rc};
 
-use ariadne::{ColorGenerator, Label, Report, ReportBuilder, ReportKind};
-
 use crate::analyze::{
-    Error, ErrorContext, Span,
+    Error, ErrorContext,
     lex::token::{Keyword, Operator, Token},
 };
 
 pub mod token;
 
 pub struct Lexer {
-    color_gen: ColorGenerator,
     code: Vec<char>,
     index: usize,
     last: Option<(Token, Range<usize>)>,
@@ -24,7 +21,6 @@ impl Lexer {
         let code: Vec<char> = code.as_ref().chars().collect();
 
         let mut lexer = Self {
-            color_gen: ColorGenerator::new(),
             code,
             index: 0,
             last: None,

@@ -1,5 +1,6 @@
 use std::collections::HashMap;
 
+use num_traits::FromPrimitive;
 use ux::{i7, i12, i26, u12};
 
 use crate::{
@@ -37,7 +38,7 @@ impl Assemble for ArmAssembler {
         }
 
         let mut emitter = OpEmitter::new(&mut asm, Allocator::default());
-        emitter.emit_call(MAIN_FN.to_owned(), None, 0);
+        emitter.emit_call(MAIN_FN.to_owned(), vec![], None, 0);
 
         asm.emit(instr::Movz {
             shift: ImmShift16::L0,
@@ -81,10 +82,10 @@ impl ArmAssembler {
     }
 
     fn asm_item(&mut self, item: Item) {
-        let Item::Function { name, bb } = item;
+        let Item::Function { name, args, bb } = item;
         self.functions.insert(name.clone(), self.current_offset());
 
-        let alloc = reg::allocate(&bb);
+        let alloc = reg::allocate(&bb, &args);
 
         self.begin_stack(alloc.stack_size());
 
@@ -189,7 +190,11 @@ impl<'c> OpEmitter<'c> {
             Operation::Multiply { a, b, dest } => self.emit_mul(a, b, dest, idx),
             Operation::Divide { a, b, dest } => self.emit_div(a, b, dest, idx),
             Operation::Return { value } => self.emit_return(value, idx),
-            Operation::Call { function, dest } => self.emit_call(function, dest, idx),
+            Operation::Call {
+                function,
+                args,
+                dest,
+            } => self.emit_call(function, args, dest, idx),
         }
     }
 
@@ -199,16 +204,37 @@ impl<'c> OpEmitter<'c> {
             SourceVal::Immediate(n) => self.asm.emit_movz(n, dest),
             SourceVal::VReg(vreg) => {
                 let src = self.map_reg(vreg, idx);
+
+                if src == dest {
+                    println!("emit same reg move");
+                }
+
                 self.asm.emit(instr::MovReg { src, dest });
             }
         }
     }
 
-    fn emit_call(&mut self, function: String, dest: Option<VirtualReg>, idx: usize) {
-        if let Some(regs_to_save) = self.alloc.stack_save(idx) {
+    fn emit_call(
+        &mut self,
+        function: String,
+        args: Vec<VirtualReg>,
+        dest: Option<VirtualReg>,
+        instr_index: usize,
+    ) {
+        if let Some(regs_to_save) = self.alloc.stack_save(instr_index) {
             for (reg, offset) in regs_to_save {
                 self.asm.emit_store(*offset, *reg);
             }
+        }
+
+        if args.len() > 8 {
+            todo!();
+        }
+
+        for (i, &arg) in args.iter().enumerate() {
+            let src = self.map_reg(arg, instr_index);
+            let dest = Register::from_usize(i).unwrap();
+            self.asm.emit(instr::MovReg { src, dest });
         }
 
         let offset = self.asm.current_offset();
@@ -216,7 +242,7 @@ impl<'c> OpEmitter<'c> {
         self.asm.fn_calls.push((function.clone(), offset));
 
         if let Some(dest) = dest {
-            let dest = self.map_reg(dest, idx);
+            let dest = self.map_reg(dest, instr_index);
             self.asm.emit(instr::MovReg { src: Reg::X0, dest });
         }
     }
