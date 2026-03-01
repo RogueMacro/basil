@@ -343,12 +343,20 @@ impl Parser {
 
     fn parse_call_args(&mut self) -> Result<Vec<Expression>, Error> {
         let mut args = Vec::new();
+        let mut first = true;
+
         while !matches!(
             self.lexer.current(),
             Some((Token::Operator(Operator::RightParenthesis), _))
         ) {
+            if !first {
+                self.expect_next(|t| matches!(t, Token::Comma), "expected comma")?;
+            }
+
             let expr = self.parse_expr()?;
             args.push(expr);
+
+            first = false;
         }
 
         Ok(args)
