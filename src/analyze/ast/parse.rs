@@ -273,6 +273,10 @@ impl Parser {
                 expr_type: ExprType::Character(c),
                 range,
             },
+            Some((Token::Bool(b), range)) => Expression {
+                expr_type: ExprType::Bool(b),
+                range,
+            },
             Some((_, range)) => {
                 return Err(self
                     .err_ctx

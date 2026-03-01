@@ -181,6 +181,8 @@ impl<'ast> Analyzer<'ast> {
         match &expr.expr_type {
             ExprType::Const(_) => Some(SemanticType::I64),
             ExprType::Character(_) => Some(SemanticType::Char),
+            ExprType::Bool(_) => Some(SemanticType::Bool),
+
             ExprType::Variable(var) => self.check_var(var, &expr.range),
 
             ExprType::Addition(expr1, expr2)

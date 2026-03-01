@@ -55,6 +55,7 @@ pub struct Expression {
 pub enum ExprType {
     Const(i64),
     Character(char),
+    Bool(bool),
 
     Variable(String),
 
@@ -71,6 +72,7 @@ pub enum SemanticType {
     Unit,
     I64,
     Char,
+    Bool,
     UserType(String),
 }
 
@@ -80,6 +82,7 @@ impl fmt::Display for SemanticType {
             SemanticType::Unit => write!(f, "()"),
             SemanticType::I64 => write!(f, "i64"),
             SemanticType::Char => write!(f, "char"),
+            SemanticType::Bool => write!(f, "bool"),
             SemanticType::UserType(typ) => write!(f, "{}", typ),
         }
     }
@@ -91,6 +94,7 @@ impl<S: AsRef<str>> From<S> for SemanticType {
             "()" => Self::Unit,
             "i64" => Self::I64,
             "char" => Self::Char,
+            "bool" => Self::Bool,
             name => Self::UserType(name.to_owned()),
         }
     }

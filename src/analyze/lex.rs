@@ -175,6 +175,8 @@ impl Lexer {
 
         let token = if let Some(keyword) = Keyword::parse(&string) {
             Token::Keyword(keyword)
+        } else if let Ok(b) = string.parse::<bool>() {
+            Token::Bool(b)
         } else {
             Token::Ident(string)
         };
