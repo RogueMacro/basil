@@ -86,6 +86,7 @@ impl ArmAssembler {
         self.functions.insert(name.clone(), self.current_offset());
 
         let alloc = reg::allocate(&bb, &args);
+        alloc.print_debug();
 
         self.begin_stack(alloc.stack_size());
 

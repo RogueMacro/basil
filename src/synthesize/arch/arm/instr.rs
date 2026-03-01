@@ -389,9 +389,16 @@ impl Instruction for StorePair {
 /// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
 /// 1  1  0  1  0  0  0  1  0  sh imm12                               Rn             Rd
 ///
+/// Encoding:
+/// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+/// 1  1  0  0  1  0  1  1  shift 0  Rm             imm6              Rn             Rd
+///
 /// - sh: 0: no shift, 1: shift left by 12 bits
+/// - shift: (00) LSL (01) LSR (10) ASR
 /// - imm12: immediate value
-/// - Rn: source register
+/// - imm6: shift amount
+/// - Rn: first source register
+/// - Rm: second source register
 /// - Rd: destination register
 #[derive(Debug, Clone, Copy)]
 pub struct Sub {
@@ -406,7 +413,10 @@ impl Instruction for Sub {
         let dest = self.dest as u32;
 
         match self.b {
-            Input::Reg(_reg) => todo!(),
+            Input::Reg(b) => {
+                let b = b as u32;
+                (0b11001011_00_0 << 21) | (b << 16) | (a << 5) | dest
+            }
             Input::Imm(imm) => {
                 let imm: i16 = imm.into();
                 (0b110100010_0 << 22) | ((imm as u32) << 10) | (a << 5) | dest

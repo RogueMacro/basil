@@ -86,8 +86,6 @@ impl Parser {
 
         let args = self.parse_decl_args()?;
 
-        let decl_end = self.lexer.cur_token_start();
-
         self.expect_next(
             |t| matches!(t, Token::Operator(Operator::RightParenthesis)),
             "expected argument or closing parenthesis",
@@ -109,6 +107,8 @@ impl Parser {
             }
             _ => SemanticType::Unit,
         };
+
+        let decl_end = self.lexer.last_token_end();
 
         let body = self.parse_block()?;
 

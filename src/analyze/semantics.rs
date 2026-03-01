@@ -21,7 +21,7 @@ struct Analyzer<'ast> {
     err_ctx: ErrorContext,
 
     variables: HashMap<String, SemanticType>,
-    functions: HashMap<String, SemanticType>,
+    functions: HashMap<String, (Range<usize>, SemanticType)>,
 }
 
 impl<'ast> Analyzer<'ast> {
@@ -42,15 +42,15 @@ impl<'ast> Analyzer<'ast> {
                 decl_range,
                 ..
             } = item;
-            if self
+            if let Some((other_decl_range, _)) = self
                 .functions
-                .insert(name.to_owned(), ret_type.to_owned())
-                .is_some()
+                .insert(name.to_owned(), (decl_range.clone(), ret_type.to_owned()))
             {
                 self.err_ctx
                     .build(decl_range.clone())
                     .with_message("duplicate function definition")
-                    .with_label(decl_range.clone(), "already defined")
+                    .with_label(decl_range.clone(), "defined here")
+                    .with_label(other_decl_range.clone(), "first defined here")
                     .report();
             }
         }
@@ -74,7 +74,7 @@ impl<'ast> Analyzer<'ast> {
             args,
             body,
             decl_range,
-            ..
+            ret_type,
         } = item;
 
         for (arg, typ) in args {
@@ -87,7 +87,7 @@ impl<'ast> Analyzer<'ast> {
                 has_return = true;
             }
 
-            self.statement(stmt);
+            self.statement(stmt, ret_type, decl_range);
         }
 
         if !has_return && name == MAIN_FN {
@@ -99,7 +99,12 @@ impl<'ast> Analyzer<'ast> {
         }
     }
 
-    fn statement(&mut self, stmt: &Statement) {
+    fn statement(
+        &mut self,
+        stmt: &Statement,
+        fn_ret_type: &SemanticType,
+        fn_decl_range: &Range<usize>,
+    ) {
         match stmt {
             Statement::Declare {
                 var,
@@ -143,7 +148,19 @@ impl<'ast> Analyzer<'ast> {
                 }
             }
             Statement::Return(expr) | Statement::Expr(expr) => {
-                self.expression(expr);
+                if let Some(typ) = self.expression(expr)
+                    && &typ != fn_ret_type
+                {
+                    self.err_ctx
+                        .build(expr.range.clone())
+                        .with_message("incompatible types")
+                        .with_label(expr.range.clone(), format!("this is of type {}", typ))
+                        .with_label(
+                            fn_decl_range.clone(),
+                            format!("function returns {}", fn_ret_type),
+                        )
+                        .report();
+                }
             }
         }
     }
@@ -177,7 +194,7 @@ impl<'ast> Analyzer<'ast> {
             }
 
             ExprType::FnCall(function, args /* TODO */) => {
-                if let Some(typ) = self.functions.get(function) {
+                if let Some((_, typ)) = self.functions.get(function) {
                     return Some(typ.clone());
                 } else {
                     self.err_ctx

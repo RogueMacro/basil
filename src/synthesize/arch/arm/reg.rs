@@ -180,26 +180,6 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     for (op_idx, op) in bb.ops.iter().enumerate() {
         let mut retired_regs = Vec::new();
 
-        if let Op::Call { .. } = op {
-            let regs_to_save: Vec<(Register, u12)> = location_map
-                .values_mut()
-                .filter_map(|l| match *l {
-                    Location::Register(r) => {
-                        let stack_offset = stack.alloc(8);
-                        *l = Location::Stack(stack_offset);
-                        Some((r, stack_offset))
-                    }
-                    _ => None,
-                })
-                .collect();
-
-            if !regs_to_save.is_empty() {
-                stack_saves.insert(op_idx, regs_to_save);
-                phys_regs.clear();
-                phys_regs.extend_from_slice(CALLER_SAVED_REGS);
-            }
-        }
-
         for (&vreg, lifetime) in lifetimes.iter_mut() {
             if let Some(interval) = lifetime.at_mut(op_idx) {
                 // This vreg overlaps (is active) at this op index
@@ -318,6 +298,26 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
             }
         }
 
+        if let Op::Call { .. } = op {
+            let regs_to_save: Vec<(Register, u12)> = location_map
+                .values_mut()
+                .filter_map(|l| match *l {
+                    Location::Register(r) => {
+                        let stack_offset = stack.alloc(8);
+                        *l = Location::Stack(stack_offset);
+                        Some((r, stack_offset))
+                    }
+                    _ => None,
+                })
+                .collect();
+
+            if !regs_to_save.is_empty() {
+                stack_saves.insert(op_idx, regs_to_save);
+                phys_regs.clear();
+                phys_regs.extend_from_slice(CALLER_SAVED_REGS);
+            }
+        }
+
         for vreg in retired_regs {
             location_map.remove(&vreg);
         }
@@ -338,7 +338,7 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
 }
 
 /// A map from (vreg, instruction position) to a [RegisterGuard].
-type RegMap = HashMap<(VirtualReg, usize), RegisterGuard>;
+type RegMap = BTreeMap<(VirtualReg, usize), RegisterGuard>;
 
 #[derive(Debug, Default)]
 pub struct Allocator {
@@ -363,6 +363,31 @@ impl Allocator {
 
     pub fn stack_save(&self, instr_index: usize) -> Option<&Vec<(Register, u12)>> {
         self.stack_saves.get(&instr_index)
+    }
+
+    pub fn print_debug(&self) {
+        let mut vec: Vec<(VirtualReg, usize, RegisterGuard)> = self
+            .regmap
+            .iter()
+            .map(|((vreg, idx), g)| (*vreg, *idx, *g))
+            .collect();
+        vec.sort_by(|a, b| {
+            if a.1 == b.1 {
+                a.0.cmp(&b.0)
+            } else {
+                a.1.cmp(&b.1)
+            }
+        });
+
+        let mut last = usize::MAX;
+        for (vreg, idx, guard) in vec {
+            if last != idx {
+                last = idx;
+                println!("\ninstruction {}", idx);
+            }
+
+            println!("{} -> {:?}", vreg, guard);
+        }
     }
 }
 
