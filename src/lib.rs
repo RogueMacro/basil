@@ -52,6 +52,8 @@ impl<E: Executable> Compiler<E> {
         let parser = Parser::new(name.clone(), lexer);
 
         let ast = parser.into_ast()?;
+        println!("{:#?}", ast);
+
         let ast = semantics::analyze(ast, name)?;
 
         let ir = IR::generate(ast);

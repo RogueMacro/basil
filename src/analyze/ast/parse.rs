@@ -260,36 +260,7 @@ impl Parser {
     }
 
     fn parse_expr(&mut self) -> Result<Expression, Error> {
-        let pos = self.lexer.cur_token_start();
-        let token = self.lexer.take_current()?;
-
-        let expr = match token {
-            Some((Token::Number(num), range)) => Expression {
-                expr_type: ExprType::Const(num),
-                range,
-            },
-            Some((Token::Ident(ident), range)) => self.parse_ident_expr(ident, range)?,
-            Some((Token::Character(c), range)) => Expression {
-                expr_type: ExprType::Character(c),
-                range,
-            },
-            Some((Token::Bool(b), range)) => Expression {
-                expr_type: ExprType::Bool(b),
-                range,
-            },
-            Some((_, range)) => {
-                return Err(self
-                    .err_ctx
-                    .unexpected_token(range, "invalid expression")
-                    .finish());
-            }
-            None => {
-                return Err(self
-                    .err_ctx
-                    .unexpected_token((pos - 1)..pos, "unexpected end of file")
-                    .finish());
-            }
-        };
+        let mut lhs = self.parse_single_expr()?;
 
         if let Some((Token::Operator(op), _)) = self.lexer.current()
             && matches!(
@@ -298,25 +269,88 @@ impl Parser {
             )
         {
             // Better way to pattern match and avoid shadowing?
-            let op = *op;
+            let mut op = *op;
 
-            self.lexer.take_current()?;
-            let sub_expr = self.parse_expr()?;
-
-            let range = (expr.range.start)..(sub_expr.range.end);
-
-            let expr_type = match op {
-                Operator::Plus => ExprType::Addition(Box::new(expr), Box::new(sub_expr)),
-                Operator::Minus => ExprType::Subtraction(Box::new(expr), Box::new(sub_expr)),
-                Operator::Star => ExprType::Multiplication(Box::new(expr), Box::new(sub_expr)),
-                Operator::Slash => ExprType::Division(Box::new(expr), Box::new(sub_expr)),
+            let left_bind_power = match op {
+                Operator::Plus | Operator::Minus => 1,
+                Operator::Star | Operator::Slash => 2,
                 _ => unreachable!(),
             };
+
+            self.lexer.take_current()?;
+
+            let right_side = match self.lexer.peek() {
+                Some((Token::Operator(next_op), _)) => match next_op {
+                    Operator::Plus | Operator::Minus => Some((1, *next_op)),
+                    Operator::Star | Operator::Slash => Some((2, *next_op)),
+                    _ => None,
+                },
+                _ => None,
+            };
+
+            // println!("left: {} / right: {}", left_bind_power, right_bind_power);
+
+            let rhs = if let Some((right_bind_power, next_op)) = right_side
+                && right_bind_power < left_bind_power
+            {
+                let rhs = self.parse_single_expr()?;
+                lhs = Expression {
+                    expr_type: self.bind_expr(op, lhs, rhs),
+                    range: 0..1,
+                };
+
+                self.lexer.lex_one()?;
+                op = next_op;
+
+                self.parse_expr()?
+            } else {
+                self.parse_expr()?
+            };
+
+            let range = (lhs.range.start)..(rhs.range.end);
+            let expr_type = self.bind_expr(op, lhs, rhs);
 
             return Ok(Expression { expr_type, range });
         }
 
-        Ok(expr)
+        Ok(lhs)
+    }
+
+    fn bind_expr(&mut self, op: Operator, lhs: Expression, rhs: Expression) -> ExprType {
+        match op {
+            Operator::Plus => ExprType::Addition(Box::new(lhs), Box::new(rhs)),
+            Operator::Minus => ExprType::Subtraction(Box::new(lhs), Box::new(rhs)),
+            Operator::Star => ExprType::Multiplication(Box::new(lhs), Box::new(rhs)),
+            Operator::Slash => ExprType::Division(Box::new(lhs), Box::new(rhs)),
+            _ => unreachable!(),
+        }
+    }
+
+    fn parse_single_expr(&mut self) -> Result<Expression, Error> {
+        let token = self.lexer.take_current()?;
+        match token {
+            Some((Token::Number(num), range)) => Ok(Expression {
+                expr_type: ExprType::Const(num),
+                range,
+            }),
+            Some((Token::Ident(ident), range)) => self.parse_ident_expr(ident, range),
+            Some((Token::Character(c), range)) => Ok(Expression {
+                expr_type: ExprType::Character(c),
+                range,
+            }),
+            Some((Token::Bool(b), range)) => Ok(Expression {
+                expr_type: ExprType::Bool(b),
+                range,
+            }),
+            Some((_, range)) => Err(self
+                .err_ctx
+                .unexpected_token(range, "invalid expression")
+                .finish()),
+            None => Err(self
+                .err_ctx
+                .unexpected_eof(self.lexer.last_token_end())
+                .finish()),
+        }
     }
 
     fn parse_ident_expr(

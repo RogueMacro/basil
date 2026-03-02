@@ -56,7 +56,7 @@ impl Lexer {
     }
 
     /// Lookahead to next token
-    pub fn next(&self) -> Option<&(Token, Range<usize>)> {
+    pub fn peek(&self) -> Option<&(Token, Range<usize>)> {
         self.next.as_ref()
     }
 
