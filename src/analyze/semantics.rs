@@ -41,27 +41,29 @@ impl Analyzer {
 
     pub fn analyze(mut self, ast: &mut AST) -> Result<(), ErrorVec> {
         for item in &ast.items {
-            let Item::Function {
+            if let Item::Function {
                 name,
                 ret_type,
                 decl_range,
                 args,
                 ..
-            } = item;
-            let args = args
-                .iter()
-                .map(|(_, t, r)| (r.clone(), t.clone()))
-                .collect();
-            if let Some((other_decl_range, _, _)) = self.functions.insert(
-                name.to_owned(),
-                (decl_range.clone(), ret_type.to_owned(), args),
-            ) {
-                self.err_ctx
-                    .build(decl_range.clone())
-                    .with_message("duplicate function definition")
-                    .with_label(decl_range.clone(), "defined here")
-                    .with_label(other_decl_range.clone(), "first defined here")
-                    .report();
+            } = item
+            {
+                let args = args
+                    .iter()
+                    .map(|(_, t, r)| (r.clone(), t.clone()))
+                    .collect();
+                if let Some((other_decl_range, _, _)) = self.functions.insert(
+                    name.to_owned(),
+                    (decl_range.clone(), ret_type.to_owned(), args),
+                ) {
+                    self.err_ctx
+                        .build(decl_range.clone())
+                        .with_message("duplicate function definition")
+                        .with_label(decl_range.clone(), "defined here")
+                        .with_label(other_decl_range.clone(), "first defined here")
+                        .report();
+                }
             }
         }
 
@@ -79,26 +81,29 @@ impl Analyzer {
     fn item(&mut self, item: &mut Item) {
         self.variables.clear();
 
-        let Item::Function {
-            name,
-            args,
-            body,
-            decl_range,
-            ret_type,
-        } = item;
+        match item {
+            Item::Function {
+                name,
+                args,
+                body,
+                decl_range,
+                ret_type,
+            } => {
+                for (arg, typ, _) in args {
+                    self.variables.insert(arg.to_owned(), typ.clone());
+                }
 
-        for (arg, typ, _) in args {
-            self.variables.insert(arg.to_owned(), typ.clone());
-        }
+                let has_return = self.body(body, ret_type, decl_range);
 
-        let has_return = self.body(body, ret_type, decl_range);
-
-        if !has_return && name == MAIN_FN {
-            self.err_ctx
-                .build(decl_range.clone())
-                .with_message("no return statement found in function main")
-                .with_label(decl_range.clone(), "main must return a value")
-                .report();
+                if !has_return && name == MAIN_FN {
+                    self.err_ctx
+                        .build(decl_range.clone())
+                        .with_message("no return statement found in function main")
+                        .with_label(decl_range.clone(), "main must return a value")
+                        .report();
+                }
+            }
+            Item::Use { lib, item } => todo!(),
         }
     }
 

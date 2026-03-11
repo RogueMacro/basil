@@ -1,12 +1,6 @@
-use std::{fmt, ops::Range};
+use std::ops::Range;
 
-use crate::{
-    analyze::{
-        lex::token::Operator,
-        semantics::{SemanticType, Sign},
-    },
-    ir::Condition,
-};
+use crate::analyze::semantics::{SemanticType, Sign};
 
 pub mod parse;
 
@@ -23,6 +17,16 @@ impl AST {
     pub fn add_item(&mut self, item: Item) {
         self.items.push(item);
     }
+
+    pub fn imports(&self) -> impl Iterator<Item = (&str, &str)> {
+        self.items.iter().filter_map(|i| {
+            if let Item::Use { lib, item } = i {
+                Some((lib.as_str(), item.as_str()))
+            } else {
+                None
+            }
+        })
+    }
 }
 
 #[derive(Debug)]
@@ -33,6 +37,10 @@ pub enum Item {
         body: Vec<Statement>,
         ret_type: SemanticType,
         decl_range: Range<usize>,
+    },
+    Use {
+        lib: String,
+        item: String,
     },
 }
 

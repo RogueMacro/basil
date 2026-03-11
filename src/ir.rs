@@ -6,7 +6,6 @@ use crate::{
 };
 
 pub mod codegen;
-pub mod flow;
 pub mod lifetime;
 
 pub struct IR {
@@ -304,7 +303,7 @@ impl fmt::Display for IR {
                     for label in labels {
                         write!(f, "{}", label)?;
                     }
-                    writeln!(f);
+                    writeln!(f)?;
                 }
 
                 match op {

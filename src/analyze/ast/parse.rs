@@ -72,11 +72,50 @@ impl Parser {
 
         match keyword {
             Keyword::Function => self.parse_function(range.start),
+            Keyword::Use => self.parse_use(),
             _ => Err(self
                 .err_ctx
-                .unexpected_token(range, "expected function")
+                .unexpected_token(range, "expected function or use statement")
                 .finish()),
         }
+    }
+
+    fn parse_use(&mut self) -> Result<Item, Error> {
+        match self.parse_use_inner() {
+            Ok(item) => Ok(item),
+            Err(err) => {
+                self.err_ctx.report(err);
+
+                Ok(Item::Use {
+                    lib: String::new(),
+                    item: String::new(),
+                })
+            }
+        }
+    }
+
+    fn parse_use_inner(&mut self) -> Result<Item, Error> {
+        let (token, range) = self.expect_take_current()?;
+        let Token::Ident(lib) = token else {
+            return Err(self
+                .err_ctx
+                .unexpected_token(range, "expected library name")
+                .finish());
+        };
+
+        self.expect_token(Token::PathSeparator, "expected path separator (::)")?;
+
+        let (token, range) = self.expect_take_current()?;
+        let Token::Ident(item) = token else {
+            return Err(self
+                .err_ctx
+                .unexpected_token(range, "expected item name")
+                .finish());
+        };
+
+        self.expect_semicolon()?;
+
+        Ok(Item::Use { lib, item })
     }
 
     fn parse_function(&mut self, decl_start: usize) -> Result<Item, Error> {

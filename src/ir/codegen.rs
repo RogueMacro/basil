@@ -15,25 +15,22 @@ impl IR {
         let mut items = Vec::new();
 
         for item in ast.items {
-            let item = match item {
-                AstItem::Function {
-                    name, body, args, ..
-                } => {
-                    let mut block_builder = BlockBuilder::new();
-                    let args = args
-                        .iter()
-                        .map(|(arg, _, _)| block_builder.get_or_insert_vreg(arg))
-                        .collect();
+            if let AstItem::Function {
+                name, body, args, ..
+            } = item
+            {
+                let mut block_builder = BlockBuilder::new();
+                let args = args
+                    .iter()
+                    .map(|(arg, _, _)| block_builder.get_or_insert_vreg(arg))
+                    .collect();
 
-                    Item::Function {
-                        name,
-                        args,
-                        bb: block_builder.build(body),
-                    }
-                }
+                items.push(Item::Function {
+                    name,
+                    args,
+                    bb: block_builder.build(body),
+                });
             };
-
-            items.push(item);
         }
 
         IR { items }

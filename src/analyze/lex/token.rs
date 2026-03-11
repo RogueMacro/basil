@@ -19,6 +19,7 @@ pub enum Token {
     Declare,
     Assign,
     Arrow,
+    PathSeparator,
 
     Operator(Operator),
 }
@@ -27,6 +28,7 @@ impl Token {
     pub fn parse_atom(current: char, lookahead: Option<char>) -> Option<(Self, bool)> {
         let token = match (current, lookahead) {
             (':', Some('=')) => (Self::Declare, true),
+            (':', Some(':')) => (Self::PathSeparator, true),
             ('-', Some('>')) => (Self::Arrow, true),
 
             ('=', _) => (Self::Assign, false),
@@ -96,6 +98,7 @@ pub enum Keyword {
     Function,
     Return,
     If,
+    Use,
 }
 
 impl Keyword {
@@ -104,6 +107,7 @@ impl Keyword {
             "fn" => Keyword::Function,
             "return" => Keyword::Return,
             "if" => Keyword::If,
+            "use" => Keyword::Use,
             _ => return None,
         };
 

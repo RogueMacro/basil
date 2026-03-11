@@ -1,74 +1,120 @@
 use std::{
-    fs, io,
+    io,
     path::{Path, PathBuf},
     time::Instant,
 };
 
-use clap::Parser;
+use clap::{Parser, Subcommand};
 use colored::Colorize;
 use istind::{Compiler, synthesize::exe::mac::AppleExecutable};
 
 #[derive(Parser)]
 #[command(version)]
 struct Cli {
-    file: PathBuf,
+    #[clap(subcommand)]
+    command: Command,
+}
+
+#[derive(Debug, Subcommand)]
+enum Command {
+    Build {
+        file: PathBuf,
+
+        #[arg(long = "asm", help = "Show generated assembly")]
+        asm: bool,
+    },
+    Run {
+        file: PathBuf,
+    },
 }
 
 fn main() -> Result<(), Error> {
     let args = Cli::parse();
 
-    if let Err(err) = run(args) {
+    if let Err(err) = cli(args) {
         eprintln!("{} {}", "error:".bright_red().bold(), err);
     }
 
     Ok(())
 }
 
-fn run(args: Cli) -> Result<(), Error> {
-    let Some(module) = args.file.file_stem() else {
+fn cli(args: Cli) -> Result<(), Error> {
+    match args.command {
+        Command::Build { file, asm } => {
+            build(&file, asm)?;
+        }
+        Command::Run { file } => {
+            build_and_run(&file)?;
+        }
+    }
+
+    Ok(())
+}
+
+fn build_and_run(file: &Path) -> Result<(), Error> {
+    let exe = build(file, false)?;
+
+    println!(
+        "{:>12} `{}`",
+        "Running".bright_green().bold(),
+        exe.to_string_lossy(),
+    );
+
+    let status = std::process::Command::new(exe).status()?;
+    std::process::exit(status.code().unwrap_or(-1));
+}
+
+fn build(file: &Path, asm: bool) -> Result<PathBuf, Error> {
+    let Some(module) = file.file_stem() else {
         return Err(Error::InvalidFile);
     };
 
+    println!(
+        "{:>12} {}",
+        "Compiling".bright_green().bold(),
+        module.to_string_lossy(),
+    );
+
     let compiler = Compiler::<AppleExecutable>::default();
 
+    let out_path = istind::files::target_mod(module)?;
+
     let start = Instant::now();
-    if let Err(error_count) = compiler.compile(&args.file, target_mod(module)?) {
+    if let Err(error_count) = compiler.compile(file, &out_path) {
         return Err(Error::CompilationFailed(error_count));
     }
     let end = Instant::now();
     let dur = end - start;
 
-    println!(
-        "{:>12} {} in {:.2}s",
-        "Compiled".bright_green().bold(),
-        module.to_string_lossy(),
-        dur.as_secs_f32(),
-    );
+    // println!(
+    //     "\r{:>12} {} in {:.2}s",
+    //     "Compiled".bright_green().bold(),
+    //     module.to_string_lossy(),
+    //     dur.as_secs_f32(),
+    // );
 
-    std::process::Command::new("otool")
-        .arg("-vt")
-        .arg("btarget/main")
-        .status()
-        .expect("program failed");
+    if asm {
+        print_assembly(&out_path);
+    }
 
-    Ok(())
+    Ok(out_path)
 }
 
 #[derive(Debug, thiserror::Error)]
 enum Error {
     #[error("path is not a compilable file")]
     InvalidFile,
-    #[error("failed to compile due to {0} errors")]
+    #[error("failed to compile due to {0} error(s)")]
     CompilationFailed(usize),
     #[error("io error")]
     Io(#[from] io::Error),
 }
 
-fn target_mod(module: impl AsRef<Path>) -> Result<PathBuf, Error> {
-    let target_dir = Path::new("btarget");
-    if !target_dir.exists() {
-        fs::create_dir(target_dir)?;
-    }
-
-    Ok(target_dir.join(module.as_ref()))
+#[cfg(target_os = "macos")]
+fn print_assembly(exe: &Path) {
+    std::process::Command::new("otool")
+        .arg("-vt")
+        .arg(exe)
+        .status()
+        .expect("program failed");
 }

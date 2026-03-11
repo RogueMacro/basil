@@ -12,6 +12,7 @@ use crate::{
 };
 
 pub mod analyze;
+pub mod files;
 pub mod ir;
 pub mod synthesize;
 
@@ -53,10 +54,14 @@ impl<E: Executable> Compiler<E> {
 
         let ast = parser.into_ast()?;
 
+        for (lib, item) in ast.imports() {
+            println!("import {} from {}", item, lib);
+        }
+
         let ast = semantics::analyze(ast, name)?;
 
         let ir = IR::generate(ast);
-        println!("{}", ir);
+        // println!("{}", ir);
 
         let code = ArmAssembler::assemble(ir);
 
