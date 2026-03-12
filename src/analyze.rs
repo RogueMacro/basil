@@ -1,16 +1,18 @@
 use std::{
     fmt::{self, Display},
+    fs, io,
     ops::{Deref, Range},
+    path::PathBuf,
     rc::Rc,
 };
 
-use ariadne::{ColorGenerator, Label, Report, ReportBuilder, ReportKind, Source};
+use ariadne::{Cache, ColorGenerator, Label, Report, ReportBuilder, ReportKind, Source};
 
 pub mod ast;
 pub mod lex;
 pub mod semantics;
 
-pub type Span = (Rc<String>, Range<usize>);
+pub type Span = (Rc<PathBuf>, Range<usize>);
 
 #[derive(Debug)]
 pub struct Error(Box<Report<'static, Span>>);
@@ -67,13 +69,13 @@ impl<'c> ErrorBuilder<'c> {
 }
 
 pub struct ErrorContext {
-    source_name: Rc<String>,
+    source_name: Rc<PathBuf>,
     color_gen: ColorGenerator,
     errors: Vec<Error>,
 }
 
 impl ErrorContext {
-    pub fn new(source_name: Rc<String>) -> Self {
+    pub fn new(source_name: Rc<PathBuf>) -> Self {
         Self {
             source_name,
             color_gen: ColorGenerator::new(),
@@ -138,10 +140,10 @@ pub struct ErrorVec(Vec<Error>);
 
 impl ErrorVec {
     /// Prints all errors to stderr
-    pub fn dump(&self, source_name: Rc<String>, source: &Source) {
+    pub fn dump(&self) {
         for error in &self.0 {
             error
-                .eprint((source_name.clone(), source))
+                .eprint(Files::default())
                 .expect("couldn't print error message to stderr");
 
             eprintln!();
@@ -167,5 +169,27 @@ impl From<Error> for ErrorVec {
 impl fmt::Debug for ErrorVec {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         write!(f, "failed to compile due to {} errors", self.0.len())
+    }
+}
+
+#[derive(Default)]
+struct Files {
+    buffer: Option<Source>,
+}
+
+impl Cache<Rc<PathBuf>> for Files {
+    type Storage = String;
+
+    fn fetch(
+        &mut self,
+        path: &Rc<PathBuf>,
+    ) -> Result<&ariadne::Source<Self::Storage>, impl fmt::Debug> {
+        self.buffer = Some(Source::from(fs::read_to_string(path.as_ref())?));
+        Ok::<_, io::Error>(self.buffer.as_ref().unwrap())
+    }
+
+    fn display<'a>(&self, path: &'a Rc<PathBuf>) -> Option<impl fmt::Display + 'a> {
+        // id.file_stem().and_then(OsStr::to_str)
+        Some(path.display())
     }
 }

@@ -1,9 +1,20 @@
-use std::{marker::PhantomData, path::Path, rc::Rc};
+use std::{
+    collections::HashMap,
+    fs,
+    marker::PhantomData,
+    path::{Path, PathBuf},
+    rc::Rc,
+};
 
-use ariadne::Source;
+use ariadne::{Cache, FileCache, Source};
 
 use crate::{
-    analyze::{ErrorVec, ast::parse::Parser, lex::Lexer, semantics},
+    analyze::{
+        ErrorVec,
+        ast::{AST, parse::Parser},
+        lex::Lexer,
+        semantics,
+    },
     ir::IR,
     synthesize::{
         arch::{Assemble, MachineCode, arm::ArmAssembler},
@@ -22,49 +33,84 @@ pub struct Compiler<E: Executable> {
 }
 
 impl<E: Executable> Compiler<E> {
-    pub fn compile(&self, path: impl AsRef<Path>, out_path: impl AsRef<Path>) -> Result<(), usize> {
-        let path = path.as_ref();
-        let source = std::fs::read_to_string(path).unwrap();
+    pub fn compile(
+        self,
+        path: impl Into<PathBuf>,
+        out_path: impl AsRef<Path>,
+    ) -> Result<(), usize> {
+        let path: Rc<PathBuf> = Rc::from(path.into());
+        let source = fs::read_to_string(path.as_ref()).unwrap();
 
-        let source_name = Rc::new(
-            path.file_name()
-                .map(|s| s.to_string_lossy().into_owned())
-                .unwrap_or(String::from("unknown")),
-        );
-
-        let code = match self.compile_source(source_name.clone(), &source) {
+        let code = match self.compile_source(path.clone(), &source) {
             Ok(code) => code,
             Err(errors) => {
-                errors.dump(source_name, &Source::from(source));
+                errors.dump();
                 return Err(errors.len());
             }
         };
 
         E::default()
-            .with_binary_identifier(source_name.as_ref())
+            .with_binary_identifier("dirthouse")
             .build(code, out_path);
 
         Ok(())
     }
 
-    pub fn compile_source(&self, name: Rc<String>, source: &str) -> Result<MachineCode, ErrorVec> {
-        let lexer = Lexer::new(name.clone(), source)?;
+    pub fn compile_source(&self, name: Rc<PathBuf>, source: &str) -> Result<MachineCode, ErrorVec> {
+        let mut ast = load_ast(name.clone(), source)?;
 
-        let parser = Parser::new(name.clone(), lexer);
+        let mut libmap = HashMap::new();
+        for lib in ast.imports() {
+            load_lib_recursive(lib, &mut libmap)?;
+        }
 
-        let ast = parser.into_ast()?;
-
-        for (lib, item) in ast.imports() {
-            println!("import {} from {}", item, lib);
+        for lib_ast in libmap.into_values() {
+            ast.items.extend(lib_ast.items);
         }
 
         let ast = semantics::analyze(ast, name)?;
 
         let ir = IR::generate(ast);
-        // println!("{}", ir);
+        println!("{}", ir);
 
         let code = ArmAssembler::assemble(ir);
 
         Ok(code)
     }
+}
+
+fn load_ast(name: Rc<PathBuf>, source: &str) -> Result<AST, ErrorVec> {
+    let lexer = Lexer::new(name.clone(), source)?;
+    let parser = Parser::new(name, lexer);
+    let ast = parser.into_ast()?;
+
+    Ok(ast)
+}
+
+fn mangle_ast(ast: &mut AST, lib: &str) {
+    use analyze::ast::Item;
+
+    for item in ast.items.iter_mut() {
+        match item {
+            Item::Function { name, .. } => *name = format!("{}::{}", lib, name),
+            Item::ExternLib(_) => (),
+        }
+    }
+}
+
+fn load_lib_recursive(lib: &str, map: &mut HashMap<String, AST>) -> Result<(), ErrorVec> {
+    if lib == "std"
+        && !map.contains_key(lib)
+        && let Ok(source) = fs::read_to_string(files::stdlib())
+    {
+        // it's ok if file doesn't exist. semantic analysis will flag it.
+        let source_name = Rc::new(files::stdlib());
+        let mut ast = load_ast(source_name, &source)?;
+        mangle_ast(&mut ast, lib);
+        map.insert(String::from("std"), ast);
+    } else {
+        todo!()
+    }
+
+    Ok(())
 }

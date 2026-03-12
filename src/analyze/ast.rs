@@ -18,10 +18,10 @@ impl AST {
         self.items.push(item);
     }
 
-    pub fn imports(&self) -> impl Iterator<Item = (&str, &str)> {
+    pub fn imports(&self) -> impl Iterator<Item = &str> {
         self.items.iter().filter_map(|i| {
-            if let Item::Use { lib, item } = i {
-                Some((lib.as_str(), item.as_str()))
+            if let Item::ExternLib(lib) = i {
+                Some(lib.as_str())
             } else {
                 None
             }
@@ -38,10 +38,7 @@ pub enum Item {
         ret_type: SemanticType,
         decl_range: Range<usize>,
     },
-    Use {
-        lib: String,
-        item: String,
-    },
+    ExternLib(String),
 }
 
 #[derive(Debug)]

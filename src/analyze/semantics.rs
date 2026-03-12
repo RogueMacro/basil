@@ -1,4 +1,4 @@
-use std::{collections::HashMap, fmt, ops::Range, rc::Rc};
+use std::{collections::HashMap, fmt, ops::Range, path::PathBuf, rc::Rc};
 
 use crate::analyze::{
     ErrorContext, ErrorVec,
@@ -9,7 +9,7 @@ pub struct ValidAST(pub AST);
 
 const MAIN_FN: &str = "main";
 
-pub fn analyze(mut ast: AST, source_name: Rc<String>) -> Result<ValidAST, ErrorVec> {
+pub fn analyze(mut ast: AST, source_name: Rc<PathBuf>) -> Result<ValidAST, ErrorVec> {
     let analyzer = Analyzer::new(source_name);
     analyzer.analyze(&mut ast)?;
 
@@ -31,7 +31,7 @@ struct Analyzer {
 }
 
 impl Analyzer {
-    pub fn new(source_name: Rc<String>) -> Self {
+    pub fn new(source_name: Rc<PathBuf>) -> Self {
         Self {
             err_ctx: ErrorContext::new(source_name),
             variables: HashMap::new(),
@@ -103,7 +103,7 @@ impl Analyzer {
                         .report();
                 }
             }
-            Item::Use { lib, item } => todo!(),
+            Item::ExternLib(lib) => (), // TODO: maybe?
         }
     }
 
@@ -301,7 +301,23 @@ impl Analyzer {
                     .filter_map(|e| self.expression(e).map(|t| (t, e.range.clone())))
                     .collect();
 
-                if let Some((_, ret_type, decl_args)) = self.functions.get(function) {
+                if let Some((fn_decl_range, ret_type, decl_args)) = self.functions.get(function) {
+                    if decl_args.len() != call_args.len() {
+                        self.err_ctx
+                            .build(expr.range.clone())
+                            .with_message(format!(
+                                "({}) expected {} arguments, got {}",
+                                function,
+                                decl_args.len(),
+                                call_args.len()
+                            ))
+                            .with_label(
+                                fn_decl_range.clone(),
+                                format!("this function takes {} arguments", decl_args.len()),
+                            )
+                            .report();
+                    }
+
                     for ((call_type, call_range), (decl_range, decl_type)) in
                         call_types.iter().zip(decl_args)
                     {

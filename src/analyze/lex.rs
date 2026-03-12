@@ -1,4 +1,4 @@
-use std::{ops::Range, rc::Rc};
+use std::{ops::Range, path::PathBuf, rc::Rc};
 
 use crate::analyze::{
     Error, ErrorContext,
@@ -17,7 +17,7 @@ pub struct Lexer {
 }
 
 impl Lexer {
-    pub fn new(source_name: Rc<String>, code: impl AsRef<str>) -> Result<Self, Error> {
+    pub fn new(source_name: Rc<PathBuf>, code: impl AsRef<str>) -> Result<Self, Error> {
         let code: Vec<char> = code.as_ref().chars().collect();
 
         let mut lexer = Self {
@@ -65,6 +65,10 @@ impl Lexer {
         self.last = self.current.take();
         self.current = self.next.take();
         self.next = self.lex_next()?;
+
+        // if let Some(token) = self.next.as_ref() {
+        //     println!("[lex] {:?}", token);
+        // }
 
         Ok(())
     }

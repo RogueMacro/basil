@@ -1,5 +1,5 @@
-fn print() -> i64 {
-    return 63;
+fn print(c: i64) -> i64 {
+    return c;
 }
 
 //fn mod(dividend: i64, divisor: i64) -> i64 {

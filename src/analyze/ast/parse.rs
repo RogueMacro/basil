@@ -1,16 +1,12 @@
-use std::{ops::Range, rc::Rc};
+use std::{ops::Range, path::PathBuf, rc::Rc};
 
-use crate::{
-    analyze::{
-        Error, ErrorCode, ErrorContext, ErrorVec,
-        ast::{AST, ArithmeticOp, CompareOp, ExprType, Expression, Item, SemanticType, Statement},
-        lex::{
-            Lexer,
-            token::{Keyword, Operator, Token},
-        },
-        semantics::Sign,
+use crate::analyze::{
+    Error, ErrorCode, ErrorContext, ErrorVec,
+    ast::{AST, ArithmeticOp, CompareOp, ExprType, Expression, Item, SemanticType, Statement},
+    lex::{
+        Lexer,
+        token::{Keyword, Operator, Token},
     },
-    ir::Condition,
 };
 
 pub struct Parser {
@@ -19,7 +15,7 @@ pub struct Parser {
 }
 
 impl Parser {
-    pub fn new(source_name: Rc<String>, lexer: Lexer) -> Self {
+    pub fn new(source_name: Rc<PathBuf>, lexer: Lexer) -> Self {
         Self {
             err_ctx: ErrorContext::new(source_name),
             lexer,
@@ -72,29 +68,27 @@ impl Parser {
 
         match keyword {
             Keyword::Function => self.parse_function(range.start),
-            Keyword::Use => self.parse_use(),
+            Keyword::Use => unimplemented!(),
+            Keyword::Extern => self.parse_extern(),
             _ => Err(self
                 .err_ctx
-                .unexpected_token(range, "expected function or use statement")
+                .unexpected_token(range, "expected function or extern import")
                 .finish()),
         }
     }
 
-    fn parse_use(&mut self) -> Result<Item, Error> {
-        match self.parse_use_inner() {
+    fn parse_extern(&mut self) -> Result<Item, Error> {
+        match self.parse_extern_inner() {
             Ok(item) => Ok(item),
             Err(err) => {
                 self.err_ctx.report(err);
 
-                Ok(Item::Use {
-                    lib: String::new(),
-                    item: String::new(),
-                })
+                Ok(Item::ExternLib(String::new()))
             }
         }
     }
 
-    fn parse_use_inner(&mut self) -> Result<Item, Error> {
+    fn parse_extern_inner(&mut self) -> Result<Item, Error> {
         let (token, range) = self.expect_take_current()?;
         let Token::Ident(lib) = token else {
             return Err(self
@@ -103,19 +97,9 @@ impl Parser {
                 .finish());
         };
 
-        self.expect_token(Token::PathSeparator, "expected path separator (::)")?;
-
-        let (token, range) = self.expect_take_current()?;
-        let Token::Ident(item) = token else {
-            return Err(self
-                .err_ctx
-                .unexpected_token(range, "expected item name")
-                .finish());
-        };
-
         self.expect_semicolon()?;
 
-        Ok(Item::Use { lib, item })
+        Ok(Item::ExternLib(lib))
     }
 
     fn parse_function(&mut self, decl_start: usize) -> Result<Item, Error> {
@@ -419,9 +403,23 @@ impl Parser {
 
     fn parse_ident_expr(
         &mut self,
-        ident: String,
+        mut ident: String,
         range: Range<usize>,
     ) -> Result<Expression, Error> {
+        while matches!(self.lexer.current(), Some((Token::PathSeparator, _))) {
+            self.lexer.lex_one()?;
+            let (token, range) = self.expect_take_current()?;
+            let Token::Ident(sub_ident) = token else {
+                return Err(self
+                    .err_ctx
+                    .unexpected_token(range, "expected identifier")
+                    .finish());
+            };
+
+            ident.push_str("::");
+            ident.push_str(&sub_ident);
+        }
+
         if matches!(self.lexer.current(), Some((Token::LeftParenthesis, _))) {
             self.lexer.take_current()?;
 
@@ -459,12 +457,8 @@ impl Parser {
         Ok(args)
     }
 
-    fn expect_op(&mut self, op: Operator, message: impl ToString) -> Result<(), Error> {
-        self.expect_matches(|t| matches!(t, Token::Operator(op)), message)
-    }
-
     fn expect_token(&mut self, token: Token, message: impl ToString) -> Result<(), Error> {
-        self.expect_matches(|t| matches!(t, token), message)
+        self.expect_matches(|t| t == &token, message)
     }
 
     fn expect_matches<F>(&mut self, matches: F, message: impl ToString) -> Result<(), Error>

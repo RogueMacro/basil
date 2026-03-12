@@ -1,4 +1,4 @@
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Keyword(Keyword),
 
@@ -46,7 +46,7 @@ impl Token {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Operator {
     Equal,
     NotEqual,
@@ -93,12 +93,13 @@ impl Operator {
     }
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum Keyword {
     Function,
     Return,
     If,
     Use,
+    Extern,
 }
 
 impl Keyword {
@@ -108,6 +109,7 @@ impl Keyword {
             "return" => Keyword::Return,
             "if" => Keyword::If,
             "use" => Keyword::Use,
+            "extern" => Keyword::Extern,
             _ => return None,
         };
 
