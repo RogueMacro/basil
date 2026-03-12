@@ -301,16 +301,16 @@ impl Analyzer {
                     if decl_args.len() != call_args.len() {
                         self.err_ctx
                             .build(expr.span.clone())
-                            .with_message(format!(
-                                "({}) expected {} arguments, got {}",
-                                function,
-                                decl_args.len(),
-                                call_args.len()
-                            ))
+                            .with_message("invalid argument count")
                             .with_label(
-                                fn_decl_span.clone(),
-                                format!("this function takes {} arguments", decl_args.len()),
+                                expr.span.clone(),
+                                format!(
+                                    "expected {} arguments, got {}",
+                                    decl_args.len(),
+                                    call_args.len()
+                                ),
                             )
+                            .with_label(fn_decl_span.clone(), "function defined here")
                             .report();
                     }
 
