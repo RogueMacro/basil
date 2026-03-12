@@ -1,7 +1,7 @@
 use std::{ops::Range, path::PathBuf, rc::Rc};
 
 use crate::analyze::{
-    Error, ErrorCode, ErrorContext, ErrorVec,
+    Error, ErrorCode, ErrorContext, ErrorVec, Span,
     ast::{AST, ArithmeticOp, CompareOp, ExprType, Expression, Item, SemanticType, Statement},
     lex::{
         Lexer,
@@ -11,13 +11,15 @@ use crate::analyze::{
 
 pub struct Parser {
     err_ctx: ErrorContext,
+    src_path: Rc<PathBuf>,
     lexer: Lexer,
 }
 
 impl Parser {
-    pub fn new(source_name: Rc<PathBuf>, lexer: Lexer) -> Self {
+    pub fn new(src_path: Rc<PathBuf>, lexer: Lexer) -> Self {
         Self {
-            err_ctx: ErrorContext::new(source_name),
+            err_ctx: ErrorContext::new(),
+            src_path,
             lexer,
         }
     }
@@ -62,7 +64,7 @@ impl Parser {
         let Token::Keyword(keyword) = token else {
             return Err(self
                 .err_ctx
-                .unexpected_token(range, "expected keyword")
+                .unexpected_token(self.span(range), "expected keyword")
                 .finish());
         };
 
@@ -72,7 +74,7 @@ impl Parser {
             Keyword::Extern => self.parse_extern(),
             _ => Err(self
                 .err_ctx
-                .unexpected_token(range, "expected function or extern import")
+                .unexpected_token(self.span(range), "expected function or extern import")
                 .finish()),
         }
     }
@@ -93,7 +95,7 @@ impl Parser {
         let Token::Ident(lib) = token else {
             return Err(self
                 .err_ctx
-                .unexpected_token(range, "expected library name")
+                .unexpected_token(self.span(range), "expected library name")
                 .finish());
         };
 
@@ -109,7 +111,7 @@ impl Parser {
             Token::Ident(name) => name,
             _ => {
                 self.err_ctx
-                    .unexpected_token(range, "expected function name")
+                    .unexpected_token(self.span(range), "expected function name")
                     .report();
 
                 String::from("???")
@@ -133,7 +135,7 @@ impl Parser {
                     SemanticType::from(ret_typ_str)
                 } else {
                     self.err_ctx
-                        .unexpected_token(range, "expected return type")
+                        .unexpected_token(self.span(range), "expected return type")
                         .report();
 
                     SemanticType::Unit
@@ -151,11 +153,11 @@ impl Parser {
             args,
             body,
             ret_type,
-            decl_range: decl_start..decl_end,
+            decl_span: self.span(decl_start..decl_end),
         })
     }
 
-    fn parse_decl_args(&mut self) -> Result<Vec<(String, SemanticType, Range<usize>)>, Error> {
+    fn parse_decl_args(&mut self) -> Result<Vec<(String, SemanticType, Span)>, Error> {
         let mut args = Vec::new();
         while let Some((Token::Ident(name), _)) = self.lexer.current() {
             let name = name.to_owned();
@@ -172,13 +174,13 @@ impl Parser {
             let Token::Ident(type_str) = type_token else {
                 return Err(self
                     .err_ctx
-                    .unexpected_token(range, "expected argument type")
+                    .unexpected_token(self.span(range), "expected argument type")
                     .finish());
             };
 
             let rend = self.lexer.last_token_end();
 
-            args.push((name, SemanticType::from(type_str), rstart..rend));
+            args.push((name, SemanticType::from(type_str), self.span(rstart..rend)));
 
             if !matches!(self.lexer.current(), Some((Token::RightParenthesis, _))) {
                 self.expect_token(Token::Comma, "expected comma")?;
@@ -207,10 +209,7 @@ impl Parser {
             }
         }
 
-        Err(self
-            .err_ctx
-            .unexpected_eof(self.lexer.cur_token_start())
-            .finish())
+        Err(self.err_ctx.unexpected_eof(self.span_eof()).finish())
     }
 
     fn parse_statement(&mut self) -> Result<Statement, Error> {
@@ -228,7 +227,7 @@ impl Parser {
                     let ExprType::Variable(var) = expr.expr_type else {
                         return Err(self
                             .err_ctx
-                            .build(expr.range)
+                            .build(expr.span)
                             .with_message("only variables are allowed in assignments")
                             .finish());
                     };
@@ -238,14 +237,14 @@ impl Parser {
                     Ok(Statement::Assign {
                         var,
                         expr: rvalue,
-                        var_range: range,
+                        var_span: self.span(range),
                     })
                 }
                 Some((Token::Declare, _)) => {
                     let ExprType::Variable(var) = expr.expr_type else {
                         return Err(self
                             .err_ctx
-                            .build(expr.range)
+                            .build(expr.span)
                             .with_message("only variables are allowed in assignments")
                             .finish());
                     };
@@ -255,17 +254,14 @@ impl Parser {
                     Ok(Statement::Declare {
                         var,
                         expr: rvalue,
-                        var_range: range,
+                        var_span: self.span(range),
                     })
                 }
                 Some((_, range)) => Err(self
                     .err_ctx
-                    .unexpected_token(range, "expected ';', '=' or ':='")
+                    .unexpected_token(self.span(range), "expected ';', '=' or ':='")
                     .finish()),
-                None => Err(self
-                    .err_ctx
-                    .unexpected_eof(self.lexer.cur_token_start())
-                    .finish()),
+                None => Err(self.err_ctx.unexpected_eof(self.span_eof()).finish()),
             }
         }
     }
@@ -276,7 +272,7 @@ impl Parser {
             Keyword::If => self.parse_if(),
             _ => Err(self
                 .err_ctx
-                .unexpected_token(range, "unexpected keyword")
+                .unexpected_token(self.span(range), "unexpected keyword")
                 .finish()),
         }
     }
@@ -316,7 +312,7 @@ impl Parser {
                 let rhs = self.parse_single_expr()?;
                 lhs = Expression {
                     expr_type: self.bind_expr(op, lhs, rhs),
-                    range: 0..1,
+                    span: self.span(0..1),
                 };
 
                 self.lexer.lex_one()?;
@@ -327,10 +323,10 @@ impl Parser {
                 self.parse_expr()?
             };
 
-            let range = (lhs.range.start)..(rhs.range.end);
+            let span = self.span((lhs.span.1.start)..(rhs.span.1.end));
             let expr_type = self.bind_expr(op, lhs, rhs);
 
-            return Ok(Expression { expr_type, range });
+            return Ok(Expression { expr_type, span });
         }
 
         Ok(lhs)
@@ -379,25 +375,22 @@ impl Parser {
         match token {
             Some((Token::Number(num), range)) => Ok(Expression {
                 expr_type: ExprType::Const(num),
-                range,
+                span: self.span(range),
             }),
             Some((Token::Ident(ident), range)) => self.parse_ident_expr(ident, range),
             Some((Token::Character(c), range)) => Ok(Expression {
                 expr_type: ExprType::Character(c),
-                range,
+                span: self.span(range),
             }),
             Some((Token::Bool(b), range)) => Ok(Expression {
                 expr_type: ExprType::Bool(b),
-                range,
+                span: self.span(range),
             }),
             Some((_, range)) => Err(self
                 .err_ctx
-                .unexpected_token(range, "invalid expression")
+                .unexpected_token(self.span(range), "invalid expression")
                 .finish()),
-            None => Err(self
-                .err_ctx
-                .unexpected_eof(self.lexer.last_token_end())
-                .finish()),
+            None => Err(self.err_ctx.unexpected_eof(self.span_eof()).finish()),
         }
     }
 
@@ -412,7 +405,7 @@ impl Parser {
             let Token::Ident(sub_ident) = token else {
                 return Err(self
                     .err_ctx
-                    .unexpected_token(range, "expected identifier")
+                    .unexpected_token(self.span(range), "expected identifier")
                     .finish());
             };
 
@@ -429,12 +422,12 @@ impl Parser {
 
             Ok(Expression {
                 expr_type: ExprType::FnCall(ident, args),
-                range: (range.start)..(self.lexer.last_token_end()),
+                span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         } else {
             Ok(Expression {
                 expr_type: ExprType::Variable(ident),
-                range: (range.start)..(self.lexer.last_token_end()),
+                span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         }
     }
@@ -467,7 +460,10 @@ impl Parser {
     {
         let (token, range) = self.expect_take_current()?;
         if !matches(&token) {
-            return Err(self.err_ctx.unexpected_token(range, message).finish());
+            return Err(self
+                .err_ctx
+                .unexpected_token(self.span(range), message)
+                .finish());
         }
 
         Ok(())
@@ -479,11 +475,13 @@ impl Parser {
             let pos = current
                 .map(|t| t.1.start)
                 .unwrap_or(self.lexer.cur_token_start());
+
+            let insert_span = self.span((pos - 1)..pos);
             self.err_ctx
-                .build(pos..(pos + 1))
+                .build(self.span(pos..(pos + 1)))
                 .with_code(ErrorCode::MissingSemicolon)
                 .with_message("expected semicolon")
-                .with_label((pos - 1)..pos, "insert the semicolon dummy")
+                .with_label(insert_span, "insert the semicolon dummy")
                 .report();
         }
 
@@ -494,13 +492,16 @@ impl Parser {
         let token = self.lexer.take_current()?;
         match token {
             Some(token) => Ok(token),
-            None => Err(self
-                .err_ctx
-                .unexpected_token(
-                    (self.lexer.cur_token_start() - 1)..self.lexer.cur_token_start(),
-                    "unexpected end of file",
-                )
-                .finish()),
+            None => Err(self.err_ctx.unexpected_eof(self.span_eof()).finish()),
         }
+    }
+
+    fn span(&self, range: Range<usize>) -> (Rc<PathBuf>, Range<usize>) {
+        (self.src_path.clone(), range)
+    }
+
+    fn span_eof(&self) -> (Rc<PathBuf>, Range<usize>) {
+        let end = self.lexer.cur_token_start();
+        self.span((end - 1)..end)
     }
 }

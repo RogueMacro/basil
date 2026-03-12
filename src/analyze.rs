@@ -47,8 +47,8 @@ impl<'c> ErrorBuilder<'c> {
         self
     }
 
-    pub fn with_label(mut self, range: Range<usize>, msg: impl ToString) -> Self {
-        let label = Label::new((self.context.source_name.clone(), range))
+    pub fn with_label(mut self, span: Span, msg: impl ToString) -> Self {
+        let label = Label::new(span)
             // .with_color(ariadne::Color::BrightRed)
             .with_color(self.context.color_gen.next())
             .with_message(msg);
@@ -69,40 +69,34 @@ impl<'c> ErrorBuilder<'c> {
 }
 
 pub struct ErrorContext {
-    source_name: Rc<PathBuf>,
     color_gen: ColorGenerator,
     errors: Vec<Error>,
 }
 
 impl ErrorContext {
-    pub fn new(source_name: Rc<PathBuf>) -> Self {
+    pub fn new() -> Self {
         Self {
-            source_name,
             color_gen: ColorGenerator::new(),
             errors: Vec::new(),
         }
     }
 
-    pub fn unexpected_token(
-        &mut self,
-        range: Range<usize>,
-        message: impl ToString,
-    ) -> ErrorBuilder<'_> {
-        self.build(range.clone())
+    pub fn unexpected_token(&mut self, span: Span, message: impl ToString) -> ErrorBuilder<'_> {
+        self.build(span.clone())
             .with_code(ErrorCode::UnexpectedToken)
             .with_message("unexpected token")
-            .with_label(range, message)
+            .with_label(span, message)
     }
 
-    pub fn unexpected_eof(&mut self, pos: usize) -> ErrorBuilder<'_> {
-        self.build((pos - 1)..pos)
+    pub fn unexpected_eof(&mut self, span: Span) -> ErrorBuilder<'_> {
+        self.build(span.clone())
             .with_code(ErrorCode::UnexpectedToken)
             .with_message("unexpected end of file")
-            .with_label((pos - 1)..pos, "why stop here??")
+            .with_label(span, "why stop here??")
     }
 
-    pub fn build(&mut self, range: Range<usize>) -> ErrorBuilder<'_> {
-        let builder = Report::build(ReportKind::Error, (self.source_name.clone(), range));
+    pub fn build(&mut self, span: Span) -> ErrorBuilder<'_> {
+        let builder = Report::build(ReportKind::Error, span);
 
         ErrorBuilder {
             builder,

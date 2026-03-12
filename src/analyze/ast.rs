@@ -1,6 +1,7 @@
-use std::ops::Range;
-
-use crate::analyze::semantics::{SemanticType, Sign};
+use crate::analyze::{
+    Span,
+    semantics::{SemanticType, Sign},
+};
 
 pub mod parse;
 
@@ -33,10 +34,10 @@ impl AST {
 pub enum Item {
     Function {
         name: String,
-        args: Vec<(String, SemanticType, Range<usize>)>,
+        args: Vec<(String, SemanticType, Span)>,
         body: Vec<Statement>,
         ret_type: SemanticType,
-        decl_range: Range<usize>,
+        decl_span: Span,
     },
     ExternLib(String),
 }
@@ -46,12 +47,12 @@ pub enum Statement {
     Declare {
         var: String,
         expr: Expression,
-        var_range: Range<usize>,
+        var_span: Span,
     },
     Assign {
         var: String,
         expr: Expression,
-        var_range: Range<usize>,
+        var_span: Span,
     },
     If {
         guard: Expression,
@@ -64,7 +65,7 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub struct Expression {
     pub expr_type: ExprType,
-    pub range: Range<usize>,
+    pub span: Span,
 }
 
 #[derive(Debug, Clone)]

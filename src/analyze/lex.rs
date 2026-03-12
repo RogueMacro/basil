@@ -14,10 +14,11 @@ pub struct Lexer {
     current: Option<(Token, Range<usize>)>,
     next: Option<(Token, Range<usize>)>,
     err_ctx: ErrorContext,
+    src_path: Rc<PathBuf>,
 }
 
 impl Lexer {
-    pub fn new(source_name: Rc<PathBuf>, code: impl AsRef<str>) -> Result<Self, Error> {
+    pub fn new(src_path: Rc<PathBuf>, code: impl AsRef<str>) -> Result<Self, Error> {
         let code: Vec<char> = code.as_ref().chars().collect();
 
         let mut lexer = Self {
@@ -26,7 +27,8 @@ impl Lexer {
             last: None,
             current: None,
             next: None,
-            err_ctx: ErrorContext::new(source_name),
+            err_ctx: ErrorContext::new(),
+            src_path,
         };
 
         lexer.lex_two()?;
@@ -144,7 +146,10 @@ impl Lexer {
         if c == '\'' {
             self.index += 1;
             let Some(character) = self.cur_char() else {
-                return Err(self.err_ctx.unexpected_eof(self.index).finish());
+                return Err(self
+                    .err_ctx
+                    .unexpected_eof(self.span((self.index - 1)..self.index))
+                    .finish());
             };
 
             self.index += 1;
@@ -152,7 +157,7 @@ impl Lexer {
                 return Err(self
                     .err_ctx
                     .unexpected_token(
-                        self.index..(self.index + 1),
+                        self.span(self.index..(self.index + 1)),
                         format!("expected ' (quote), got '{:?}'", self.cur_char()),
                     )
                     .finish());
@@ -167,7 +172,10 @@ impl Lexer {
 
         Err(self
             .err_ctx
-            .unexpected_token(self.index..(self.index + 1), "unexpected character")
+            .unexpected_token(
+                self.span(self.index..(self.index + 1)),
+                "unexpected character",
+            )
             .finish())
     }
 
@@ -213,5 +221,9 @@ impl Lexer {
                 break;
             }
         }
+    }
+
+    fn span(&self, range: Range<usize>) -> (Rc<PathBuf>, Range<usize>) {
+        (self.src_path.clone(), range)
     }
 }
