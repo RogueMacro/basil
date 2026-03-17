@@ -6,7 +6,7 @@ use strum::EnumIter;
 use ux::u12;
 
 use crate::{
-    ir::{BasicBlock, Op, VirtualReg},
+    ir::{BasicBlock, Op, Operation, VirtualReg},
     synthesize::arch::arm::{
         ArmAssembler,
         instr::{self, Input},
@@ -187,8 +187,8 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
         .map(|(i, &vreg)| (Register::from_usize(i).unwrap(), vreg))
         .collect();
 
-    let mut clean_regs: Vec<(Register, VirtualReg)> = Vec::new();
-    let mut unused_regs: Vec<Register> = CALLER_SAVED_REGS.to_vec();
+    let mut clean_regs = Vec::new();
+    let mut unused_regs = CALLER_SAVED_REGS.to_vec();
 
     for (i, op) in bb.ops.iter().enumerate() {
         let (uses, assigned) = op.vregs_used();
@@ -231,6 +231,25 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
             regmap.insert((vreg, i), guard);
         }
 
+        if matches!(op, Operation::Call { .. }) {
+            for (_, vreg) in clean_regs.drain(..) {
+                locations.get_mut(&vreg).unwrap().reg = None;
+            }
+
+            let save = dirty_regs
+                .drain(..)
+                .map(|(reg, vreg)| {
+                    println!("({}) stack save: {:?} / {}", i, reg, vreg);
+                    let entry = locations.get_mut(&vreg).unwrap();
+                    entry.reg = None;
+                    (reg, entry.stack)
+                })
+                .collect::<Vec<_>>();
+
+            stack_saves.insert(i, save);
+            unused_regs = CALLER_SAVED_REGS.to_vec();
+        }
+
         if let Some(vreg) = assigned {
             let entry = *locations.entry(vreg).or_insert_with(|| AllocEntry {
                 reg: None,
@@ -245,14 +264,14 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
                 })
                 .unwrap_or_else(|| {
                     if let Some(reg) = unused_regs.pop() {
-                        dirty_regs.push((reg, vreg));
+                        clean_regs.push((reg, vreg));
                         RegisterGuard::Load {
                             load: entry.stack,
                             reg,
                         }
                     } else if let Some((reg, old_vreg)) = clean_regs.pop() {
                         locations.get_mut(&old_vreg).unwrap().reg = None;
-                        dirty_regs.push((reg, vreg));
+                        clean_regs.push((reg, vreg));
                         RegisterGuard::Load {
                             load: entry.stack,
                             reg,
@@ -260,7 +279,7 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
                     } else if let Some((reg, old_vreg)) = dirty_regs.pop() {
                         let old_entry = locations.get_mut(&old_vreg).unwrap();
                         old_entry.reg = None;
-                        dirty_regs.push((reg, vreg));
+                        clean_regs.push((reg, vreg));
                         RegisterGuard::SaveAndLoad {
                             save: old_entry.stack,
                             load: entry.stack,
