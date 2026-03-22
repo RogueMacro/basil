@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     analyze::{
-        ast::{ArithmeticOp, ExprType, Expression, Item as AstItem, Statement},
+        ast::{ArithmeticOp, Assignable, ExprType, Expression, Item as AstItem, Statement},
         semantics::{Sign, ValidAST},
     },
     ir::{BasicBlock, Condition, IR, Item, Label, Op, OpIndex, SourceVal, VirtualReg},
@@ -69,7 +69,7 @@ impl BlockBuilder {
 
         for stmt in block {
             match stmt {
-                Statement::Declare { var, expr, .. } | Statement::Assign { var, expr, .. } => {
+                Statement::Declare { var, expr, .. } => {
                     assert!(!self.vregs.contains_key(&var), "variable declared twice");
 
                     let dest = self.get_or_insert_vreg(var);
@@ -77,6 +77,22 @@ impl BlockBuilder {
 
                     if src != SourceVal::VReg(dest) {
                         self.ops.push(Op::Assign { src, dest });
+                    }
+                }
+                Statement::Assign { var, expr, .. } => {
+                    let dest = self.get_or_insert_vreg(var.symbol());
+                    let src = self.unroll_expr(&expr, Some(dest));
+
+                    match var {
+                        Assignable::Var(_) => {
+                            if src.reg() != Some(dest) {
+                                self.ops.push(Op::Assign { src, dest })
+                            }
+                        }
+                        Assignable::Ptr(_) => {
+                            let src = self.src_to_vreg(src);
+                            self.ops.push(Op::StorePointer { src, ptr: dest });
+                        }
                     }
                 }
                 Statement::Return(expr) => {
@@ -88,12 +104,6 @@ impl BlockBuilder {
                     let cond = self.src_to_vreg(cond);
                     let label = self.reserve_label();
                     self.ops.push(Op::BranchIfFalse { cond, label });
-
-                    // let sub_vregs = self
-                    //     .vregs
-                    //     .iter()
-                    //     .map(|(k, v)| (k.to_owned(), VirtualReg(v.0 * 2)))
-                    //     .collect();
 
                     let outer_vregs = std::mem::take(&mut self.vregs);
                     let outer_vreg_counter = std::mem::take(&mut self.vreg_counter);
@@ -128,8 +138,23 @@ impl BlockBuilder {
             ExprType::Const(num) => SourceVal::Immediate(*num),
             ExprType::Character(c) => SourceVal::Immediate(*c as i64),
             ExprType::Bool(b) => SourceVal::Immediate(*b as i64),
-            ExprType::Variable(var, ..) => SourceVal::VReg(self.expect_vreg(var)),
-            ExprType::Pointer(var) => todo!(),
+
+            ExprType::Variable(var) => SourceVal::VReg(self.expect_vreg(var)),
+            ExprType::Pointer(var) => {
+                let val = self.expect_vreg(var);
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.ops.push(Op::AddressOf { val, dest });
+                SourceVal::VReg(dest)
+            }
+            ExprType::Deref(var) => {
+                let ptr = self.expect_vreg(var);
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.ops.push(Op::LoadPointer { ptr, dest });
+                SourceVal::VReg(dest)
+            }
+
             ExprType::Arithmetic(expr1, expr2, op, _sign) => {
                 // TODO: sign
                 let a = self.unroll_expr(expr1.as_ref(), None);
@@ -167,6 +192,7 @@ impl BlockBuilder {
 
                 SourceVal::VReg(dest)
             }
+
             ExprType::FnCall(function, args) => {
                 let args = args
                     .iter()
@@ -176,14 +202,17 @@ impl BlockBuilder {
                     })
                     .collect();
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg());
                 self.ops.push(Op::Call {
                     function: function.clone(),
                     args,
-                    dest: Some(dest),
+                    dest,
                 });
 
-                SourceVal::VReg(dest)
+                if let Some(dest) = dest {
+                    SourceVal::VReg(dest)
+                } else {
+                    SourceVal::Immediate(0)
+                }
             }
         }
     }
@@ -224,7 +253,7 @@ impl BlockBuilder {
 
     fn reserve_label(&mut self) -> Label {
         self.label_counter += 1;
-        Label(self.label_counter - 1)
+        Label::N(self.label_counter - 1)
     }
 
     fn set_label_here(&mut self, label: Label) {

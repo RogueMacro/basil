@@ -2,7 +2,10 @@ use std::{ops::Range, path::PathBuf, rc::Rc};
 
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, ErrorVec, Span,
-    ast::{AST, ArithmeticOp, CompareOp, ExprType, Expression, Item, SemanticType, Statement},
+    ast::{
+        AST, ArithmeticOp, Assignable, CompareOp, ExprType, Expression, Item, SemanticType,
+        Statement,
+    },
     lex::{
         Lexer,
         token::{Keyword, Operator, Token},
@@ -130,16 +133,7 @@ impl Parser {
         let ret_type = match self.lexer.current() {
             Some((Token::Arrow, _)) => {
                 self.lexer.lex_one()?;
-                let (token, range) = self.expect_take_current()?;
-                if let Token::Ident(ret_typ_str) = token {
-                    SemanticType::from(ret_typ_str)
-                } else {
-                    self.err_ctx
-                        .unexpected_token(self.span(range), "expected return type")
-                        .report();
-
-                    SemanticType::Unit
-                }
+                self.parse_type()?
             }
             _ => SemanticType::Unit,
         };
@@ -170,17 +164,11 @@ impl Parser {
                 "expected colon and argument type",
             )?;
 
-            let (type_token, range) = self.expect_take_current()?;
-            let Token::Ident(type_str) = type_token else {
-                return Err(self
-                    .err_ctx
-                    .unexpected_token(self.span(range), "expected argument type")
-                    .finish());
-            };
+            let arg_type = self.parse_type()?;
 
             let rend = self.lexer.last_token_end();
 
-            args.push((name, SemanticType::from(type_str), self.span(rstart..rend)));
+            args.push((name, arg_type, self.span(rstart..rend)));
 
             if !matches!(self.lexer.current(), Some((Token::RightParenthesis, _))) {
                 self.expect_token(Token::Comma, "expected comma")?;
@@ -188,6 +176,20 @@ impl Parser {
         }
 
         Ok(args)
+    }
+
+    fn parse_type(&mut self) -> Result<SemanticType, Error> {
+        let (type_token, range) = self.expect_take_current()?;
+        match type_token {
+            Token::Reference => self
+                .parse_type()
+                .map(|t| SemanticType::Pointer(Box::new(t))),
+            Token::Ident(type_str) => Ok(SemanticType::from(type_str)),
+            _ => Err(self
+                .err_ctx
+                .unexpected_token(self.span(range), "expected argument type")
+                .finish()),
+        }
     }
 
     fn parse_block(&mut self) -> Result<Vec<Statement>, Error> {
@@ -224,12 +226,17 @@ impl Parser {
             match self.lexer.take_current()? {
                 Some((Token::Semicolon, _)) => Ok(Statement::Expr(expr)),
                 Some((Token::Assign, _)) => {
-                    let ExprType::Variable(var) = expr.expr_type else {
-                        return Err(self
-                            .err_ctx
-                            .error(expr.span)
-                            .with_message("only variables are allowed in assignments")
-                            .finish());
+                    let var = match expr.expr_type {
+                        ExprType::Variable(var) => Assignable::Var(var),
+                        ExprType::Deref(var) => Assignable::Ptr(var),
+                        _ => {
+                            return Err(self
+                                .err_ctx
+                                .error(expr.span.clone())
+                                .with_message("invalid assignment")
+                                .with_label(expr.span, "only variables are allowed in assignments")
+                                .finish());
+                        }
                     };
 
                     let rvalue = self.parse_expr()?;
@@ -244,8 +251,9 @@ impl Parser {
                     let ExprType::Variable(var) = expr.expr_type else {
                         return Err(self
                             .err_ctx
-                            .error(expr.span)
-                            .with_message("only variables are allowed in assignments")
+                            .error(expr.span.clone())
+                            .with_message("invalid assignment")
+                            .with_label(expr.span, "only variables are allowed in assignments")
                             .finish());
                     };
 
@@ -392,6 +400,23 @@ impl Parser {
                 Ok(Expression {
                     expr_type: ExprType::Pointer(var),
                     span: self.span(ref_range.start..var_range.end),
+                })
+            }
+            Some((Token::Operator(Operator::Star), deref_range)) => {
+                let (token, var_range) = self.expect_take_current()?;
+                let Token::Ident(var) = token else {
+                    let var_span = self.span(var_range);
+                    return Err(self
+                        .err_ctx
+                        .error(self.span(deref_range))
+                        .with_message("invalid pointer deref")
+                        .with_label(var_span, "expected variable")
+                        .finish());
+                };
+
+                Ok(Expression {
+                    expr_type: ExprType::Deref(var),
+                    span: self.span(deref_range.start..var_range.end),
                 })
             }
             Some((Token::Ident(ident), range)) => self.parse_ident_expr(ident, range),

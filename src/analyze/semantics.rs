@@ -7,7 +7,7 @@ use std::{
 
 use crate::analyze::{
     ErrorContext, ErrorVec, Span,
-    ast::{AST, ExprType, Expression, Item, Statement},
+    ast::{AST, Assignable, ExprType, Expression, Item, Statement},
 };
 
 pub struct ValidAST(pub AST);
@@ -177,7 +177,10 @@ impl Analyzer {
                 var_span,
             } => {
                 let assign_type = self.expression(expr);
-                let decl_type = self.check_var(var, var_span);
+                let decl_type = match var {
+                    Assignable::Var(var) => self.check_var(var, var_span),
+                    Assignable::Ptr(ptr) => self.check_ptr(ptr, var_span),
+                };
 
                 if let Some(assign_type) = assign_type
                     && let Some(decl_type) = decl_type
@@ -210,7 +213,10 @@ impl Analyzer {
 
                 return self.body(body, fn_ret_type, fn_decl_span);
             }
-            Statement::Return(expr) | Statement::Expr(expr) => {
+            Statement::Expr(expr) => {
+                self.expression(expr);
+            }
+            Statement::Return(expr) => {
                 if let Some(typ) = self.expression(expr)
                     && &typ != fn_ret_type
                 {
@@ -239,7 +245,11 @@ impl Analyzer {
             ExprType::Bool(_) => Some(SemanticType::Bool),
 
             ExprType::Variable(var) => self.check_var(var, &expr.span),
-            ExprType::Pointer(expr) => todo!(),
+            ExprType::Pointer(var) => self
+                .check_var(var, &expr.span)
+                .map(|t| SemanticType::Pointer(Box::new(t))),
+            ExprType::Deref(var) => self.check_ptr(var, &expr.span),
+
             ExprType::Arithmetic(expr1, expr2, _op, expr_sign) => {
                 if let Some(type1) = self.expression(expr1)
                     && let Some(type2) = self.expression(expr2)
@@ -386,6 +396,23 @@ impl Analyzer {
             .with_message("undeclared variable")
             .with_label(span.clone(), "this guy doesn't exist")
             .report();
+
+        None
+    }
+
+    fn check_ptr(&mut self, symbol: &str, span: &Span) -> Option<SemanticType> {
+        if let Some(typ) = self.check_var(symbol, &span) {
+            match typ {
+                SemanticType::Pointer(typ) => return Some(*typ),
+                typ => {
+                    self.err_ctx
+                        .error(span.clone())
+                        .with_message("invalid pointer deref")
+                        .with_label(span.clone(), format!("cannot derefence type {}", typ))
+                        .report();
+                }
+            }
+        }
 
         None
     }

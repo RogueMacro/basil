@@ -97,6 +97,8 @@ impl ArmAssembler {
         }
 
         emitter.end();
+
+        self.end_stack();
     }
 
     fn begin_stack(&mut self, stack_size: u12) {
@@ -149,9 +151,11 @@ impl ArmAssembler {
             second: Reg::LR,
             offset: i7::new(2),
         });
+
+        self.emit(instr::Ret);
     }
 
-    fn emit_store(&mut self, offset: u12, register: Register) {
+    fn emit_stack_store(&mut self, offset: u12, register: Register) {
         self.emit(instr::Store {
             base: Reg::SP,
             offset: instr::Input::Imm(offset),
@@ -197,8 +201,14 @@ impl<'c> ScopedEmitter<'c> {
         }
     }
 
-    fn map_reg(&mut self, vreg: VirtualReg, instr_index: usize) -> Register {
+    fn map_reg_use(&mut self, vreg: VirtualReg, instr_index: usize) -> Register {
         self.alloc.map(vreg, instr_index).unwrap(self.asm)
+    }
+
+    fn map_reg_assign(&mut self, dest: VirtualReg, idx: usize) -> (Register, u12) {
+        let reg = self.alloc.map(dest, idx).unwrap(self.asm);
+        let stack_idx = self.alloc.stack_index_of(&dest);
+        (reg, stack_idx)
     }
 
     fn asm_op(&mut self, op: Operation, idx: OpIndex) {
@@ -216,6 +226,9 @@ impl<'c> ScopedEmitter<'c> {
 
         match op {
             Operation::Assign { src, dest } => self.emit_assign(src, dest, idx),
+            Operation::AddressOf { val, dest } => self.emit_addr_of(val, dest, idx),
+            Operation::LoadPointer { ptr, dest } => self.emit_load_ptr(ptr, dest, idx),
+            Operation::StorePointer { src, ptr } => self.emit_store_ptr(src, ptr, idx),
 
             Operation::Add { a, b, dest } => self.emit_add(a, b, dest, idx),
             Operation::Subtract { a, b, dest } => self.emit_sub(a, b, dest, idx),
@@ -235,33 +248,61 @@ impl<'c> ScopedEmitter<'c> {
     }
 
     fn emit_assign(&mut self, src: SourceVal, dest: VirtualReg, idx: usize) {
-        let guard = self.alloc.map(dest, idx);
-        let (dest, stack_ptr) = match guard {
-            RegisterGuard::Ready(_) => unreachable!(),
-            RegisterGuard::Load { load, reg } => (reg, load),
-            RegisterGuard::Save { .. } => unreachable!(),
-            RegisterGuard::SaveAndLoad { save, load, reg } => {
-                self.asm.emit_store(save, reg);
-                (reg, load)
-            }
-        };
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
 
         match src {
             SourceVal::Immediate(n) => {
                 self.asm.emit_movz(n, dest);
             }
             SourceVal::VReg(vreg) => {
-                let src = self.map_reg(vreg, idx);
-
-                if src == dest {
-                    println!("emit same reg move");
+                let src = self.map_reg_use(vreg, idx);
+                if src != dest {
+                    self.asm.emit(instr::MovReg { src, dest });
                 }
-
-                self.asm.emit(instr::MovReg { src, dest });
             }
         }
 
-        self.asm.emit_store(stack_ptr, dest);
+        self.asm.emit_stack_store(stack_ptr, dest);
+    }
+
+    fn emit_addr_of(&mut self, val: VirtualReg, dest: VirtualReg, idx: usize) {
+        let stack_idx = self.alloc.stack_index_of(&val);
+        let stack_idx: u16 = stack_idx.into();
+        let stack_idx = i12::new(stack_idx as i16);
+
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+
+        self.asm.emit(instr::Add {
+            a: Register::SP,
+            b: instr::Input::Imm(stack_idx),
+            dest,
+        });
+
+        self.asm.emit_stack_store(stack_ptr, dest);
+    }
+
+    fn emit_load_ptr(&mut self, ptr: VirtualReg, dest: VirtualReg, idx: usize) {
+        let ptr = self.map_reg_use(ptr, idx);
+        let (dest, store_stack_ptr) = self.map_reg_assign(dest, idx);
+
+        self.asm.emit(instr::Load {
+            base: ptr,
+            offset: u12::new(0),
+            dest,
+        });
+
+        self.asm.emit_stack_store(store_stack_ptr, dest);
+    }
+
+    fn emit_store_ptr(&mut self, src: VirtualReg, ptr: VirtualReg, idx: usize) {
+        let ptr = self.map_reg_use(ptr, idx);
+        let src = self.map_reg_use(src, idx);
+
+        self.asm.emit(instr::Store {
+            base: ptr,
+            offset: instr::Input::Imm(u12::new(0)),
+            register: src,
+        });
     }
 
     fn emit_call(
@@ -273,7 +314,7 @@ impl<'c> ScopedEmitter<'c> {
     ) {
         if let Some(regs_to_save) = self.alloc.stack_save(instr_index) {
             for (reg, offset) in regs_to_save {
-                self.asm.emit_store(*offset, *reg);
+                self.asm.emit_stack_store(*offset, *reg);
             }
         }
 
@@ -282,7 +323,7 @@ impl<'c> ScopedEmitter<'c> {
         }
 
         for (i, &arg) in args.iter().enumerate() {
-            let src = self.map_reg(arg, instr_index);
+            let src = self.map_reg_use(arg, instr_index);
             let dest = Register::from_usize(i).unwrap();
             self.asm.emit(instr::MovReg { src, dest });
         }
@@ -292,61 +333,60 @@ impl<'c> ScopedEmitter<'c> {
         self.asm.fn_calls.push((function.clone(), offset));
 
         if let Some(dest) = dest {
-            let guard = self.alloc.map(dest, instr_index);
-            let (dest, stack_ptr) = match guard {
-                RegisterGuard::Ready(_) => unreachable!(),
-                RegisterGuard::Load { load, reg } => (reg, load),
-                RegisterGuard::Save { .. } => unreachable!(),
-                RegisterGuard::SaveAndLoad { save, load, reg } => {
-                    self.asm.emit_store(save, reg);
-                    (reg, load)
-                }
-            };
+            let (dest, stack_ptr) = self.map_reg_assign(dest, instr_index);
 
             self.asm.emit(instr::MovReg { src: Reg::X0, dest });
-            self.asm.emit_store(stack_ptr, dest);
+            self.asm.emit_stack_store(stack_ptr, dest);
         }
     }
 
     fn emit_add(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let dest = self.map_reg(dest, idx);
-        let a = self.map_reg(a, idx);
-        let b = self.map_reg(b, idx);
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+        let a = self.map_reg_use(a, idx);
+        let b = self.map_reg_use(b, idx);
+
         self.asm.emit(instr::Add {
             a,
             b: instr::Input::Reg(b),
             dest,
         });
+        self.asm.emit_stack_store(stack_ptr, dest);
     }
 
     fn emit_sub(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let dest = self.map_reg(dest, idx);
-        let a = self.map_reg(a, idx);
-        let b = self.map_reg(b, idx);
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+        let a = self.map_reg_use(a, idx);
+        let b = self.map_reg_use(b, idx);
+
         self.asm.emit(instr::Sub {
             a,
             b: instr::Input::Reg(b),
             dest,
         });
+        self.asm.emit_stack_store(stack_ptr, dest);
     }
 
     fn emit_mul(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let dest = self.map_reg(dest, idx);
-        let a = self.map_reg(a, idx);
-        let b = self.map_reg(b, idx);
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+        let a = self.map_reg_use(a, idx);
+        let b = self.map_reg_use(b, idx);
+
         self.asm.emit(instr::Mul { a, b, dest });
+        self.asm.emit_stack_store(stack_ptr, dest);
     }
 
     fn emit_div(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let dest = self.map_reg(dest, idx);
-        let a = self.map_reg(a, idx);
-        let b = self.map_reg(b, idx);
+        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+        let a = self.map_reg_use(a, idx);
+        let b = self.map_reg_use(b, idx);
+
         self.asm.emit(instr::Div {
             a,
             b,
             dest,
             signed: true,
         });
+        self.asm.emit_stack_store(stack_ptr, dest);
     }
 
     fn emit_cmp(
@@ -357,9 +397,9 @@ impl<'c> ScopedEmitter<'c> {
         dest: VirtualReg,
         idx: usize,
     ) {
-        let a = self.map_reg(a, idx);
-        let b = self.map_reg(b, idx);
-        let dest = self.map_reg(dest, idx);
+        let a = self.map_reg_use(a, idx);
+        let b = self.map_reg_use(b, idx);
+        let dest = self.map_reg_use(dest, idx);
 
         self.asm.emit(instr::Cmp { a, b });
         self.asm.emit(instr::BranchCond {
@@ -374,37 +414,53 @@ impl<'c> ScopedEmitter<'c> {
     }
 
     fn emit_branch_if_false(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
-        let cond = self.map_reg(cond, idx);
+        let cond = self.map_reg_use(cond, idx);
 
         let instr_idx = self.asm.current_offset();
-        self.asm.emit_nop();
+        self.lazy_emit(label, move |offset| instr::BranchZero {
+            addr: i19::new((offset - instr_idx) as i32 / 4),
+            reg: cond,
+        });
+    }
 
-        self.lazy_emits.push(Box::new(move |emitter| {
-            let jump_idx = emitter.mapped_labels.get(&label).unwrap();
-            emitter.asm.emit_at(
-                instr_idx,
-                instr::BranchZero {
-                    addr: i19::new((jump_idx - instr_idx) as i32 / 4),
-                    reg: cond,
-                },
-            )
-        }));
+    fn emit_jump(&mut self, label: Label) {
+        let instr_idx = self.asm.current_offset();
+        self.lazy_emit(label, move |offset| {
+            let offset = i26::new((offset - instr_idx) as i32 / 4);
+            println!("jump {}", offset);
+            instr::Branch { offset }
+        });
     }
 
     fn emit_return(&mut self, src: SourceVal, idx: usize) {
         match src {
             SourceVal::Immediate(n) => self.asm.emit_movz(n, Reg::X0),
             SourceVal::VReg(vreg) => {
-                let src = self.map_reg(vreg, idx);
+                let src = self.map_reg_use(vreg, idx);
                 self.asm.emit(instr::MovReg { src, dest: Reg::X0 });
             }
         }
 
-        self.asm.end_stack();
-        self.asm.emit(instr::Ret);
+        self.emit_jump(Label::FnRet);
+    }
+
+    fn lazy_emit<F, I>(&mut self, label: Label, emit: F)
+    where
+        F: FnOnce(InstrIndex) -> I + 'static,
+        I: Instruction,
+    {
+        let offset = self.asm.current_offset();
+        self.asm.emit_nop();
+        self.lazy_emits.push(Box::new(move |emitter| {
+            let mapped = emitter.mapped_labels.get(&label).unwrap();
+            let instr = emit(*mapped);
+            emitter.asm.emit_at(offset, instr);
+        }));
     }
 
     pub fn end(mut self) {
+        self.mapped_labels
+            .insert(Label::FnRet, self.asm.current_offset());
         for lazy_emit in std::mem::take(&mut self.lazy_emits) {
             lazy_emit(&mut self);
         }

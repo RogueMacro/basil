@@ -50,7 +50,7 @@ pub enum Statement {
         var_span: Span,
     },
     Assign {
-        var: String,
+        var: Assignable,
         expr: Expression,
         var_span: Span,
     },
@@ -60,6 +60,20 @@ pub enum Statement {
     },
     Return(Expression),
     Expr(Expression),
+}
+
+#[derive(Debug, Clone)]
+pub enum Assignable {
+    Var(String),
+    Ptr(String),
+}
+
+impl Assignable {
+    pub fn symbol(&self) -> &str {
+        match self {
+            Self::Var(var) | Self::Ptr(var) => var,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -76,14 +90,11 @@ pub enum ExprType {
 
     Variable(String),
     Pointer(String),
+    Deref(String),
 
     Arithmetic(Box<Expression>, Box<Expression>, ArithmeticOp, Option<Sign>),
     Comparison(Box<Expression>, Box<Expression>, CompareOp, Option<Sign>),
 
-    // Addition(Box<Expression>, Box<Expression>),
-    // Subtraction(Box<Expression>, Box<Expression>),
-    // Multiplication(Box<Expression>, Box<Expression>),
-    // Division(Box<Expression>, Box<Expression>),
     FnCall(String, Vec<Expression>),
 }
 

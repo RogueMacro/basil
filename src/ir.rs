@@ -76,11 +76,17 @@ impl BasicBlock {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
-pub struct Label(u32);
+pub enum Label {
+    N(u32),
+    FnRet,
+}
 
 impl fmt::Display for Label {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, ".L{}", self.0)
+        match self {
+            Self::N(n) => write!(f, ".L{}", n),
+            Self::FnRet => write!(f, ".end"),
+        }
     }
 }
 
@@ -91,6 +97,18 @@ pub enum Operation {
     Assign {
         src: SourceVal,
         dest: VirtualReg,
+    },
+    AddressOf {
+        val: VirtualReg,
+        dest: VirtualReg,
+    },
+    LoadPointer {
+        ptr: VirtualReg,
+        dest: VirtualReg,
+    },
+    StorePointer {
+        src: VirtualReg,
+        ptr: VirtualReg,
     },
     Add {
         a: VirtualReg,
@@ -151,9 +169,19 @@ impl Operation {
                 push(src.reg());
                 assigned = Some(*dest);
             }
+            Operation::AddressOf { val: _, dest } => {
+                push(Some(*dest));
+            }
+            Operation::LoadPointer { ptr, dest } => {
+                push(Some(*ptr));
+                assigned = Some(*dest);
+            }
+            Operation::StorePointer { src, ptr } => {
+                push(Some(*src));
+                push(Some(*ptr));
+            }
+
             Operation::Add { a, b, dest } | Operation::Subtract { a, b, dest } => {
-                // push(a.reg());
-                // push(b.reg());
                 push(Some(*a));
                 push(Some(*b));
                 assigned = Some(*dest);
@@ -261,6 +289,7 @@ impl Condition {
 pub enum SourceVal {
     Immediate(i64),
     VReg(VirtualReg),
+    // Addr(VirtualReg),
 }
 
 impl SourceVal {
@@ -278,6 +307,7 @@ impl fmt::Display for SourceVal {
         match self {
             SourceVal::Immediate(n) => write!(f, "{}", n),
             SourceVal::VReg(vreg) => write!(f, "{}", vreg),
+            // SourceVal::Addr(vreg) => write!(f, "&{}", vreg.0),
         }
     }
 }
@@ -316,6 +346,16 @@ impl fmt::Display for IR {
 
                 match op {
                     Operation::Assign { src, dest } => writeln!(f, "    {} = {}", dest, src)?,
+                    Operation::AddressOf { val, dest } => {
+                        writeln!(f, "    {} = ref {}", dest, val)?
+                    }
+                    Operation::LoadPointer { ptr, dest } => {
+                        writeln!(f, "    {} = deref {}", dest, ptr)?
+                    }
+                    Operation::StorePointer { src, ptr } => {
+                        writeln!(f, "    deref {} = {}", ptr, src)?
+                    }
+
                     Operation::Add { a, b, dest } => writeln!(f, "    {} = {} + {}", dest, a, b)?,
                     Operation::Subtract { a, b, dest } => {
                         writeln!(f, "    {} = {} - {}", dest, a, b)?

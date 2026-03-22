@@ -2,8 +2,10 @@ fn print(c: i64) -> i64 {
     return c;
 }
 
-fn add_one(i: i64) -> i64 {
-    return i + 1;
+fn add_one(i: &i64) {
+    n := *i;
+    n = n + 1;
+    *i = n;
 }
 
 fn add_two(i: i64) -> i64 {

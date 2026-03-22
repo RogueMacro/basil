@@ -282,14 +282,16 @@ impl Instruction for Div {
 /// - Rt: destination register
 #[derive(Debug, Clone, Copy)]
 pub struct Load {
-    pub stack_offset: u12,
+    pub base: Register,
+    pub offset: u12,
     pub dest: Register,
 }
 
 impl Instruction for Load {
     fn encode(&self) -> u32 {
-        let offset: u32 = self.stack_offset.into();
-        let base = Register::SP as u32;
+        let offset: u16 = self.offset.into();
+        let offset = offset as u32;
+        let base = self.base as u32;
         let dest = self.dest as u32;
 
         (0b1111100101 << 22) | (offset << 10) | (base << 5) | dest
