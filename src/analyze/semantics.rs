@@ -5,7 +5,7 @@ use std::{
 
 use crate::analyze::{
     ErrorContext, ErrorVec, Span,
-    ast::{AST, Assignable, ExprType, Expression, Item, Statement},
+    ast::{AST, Assignable, ExprInner, Expression, Item, Statement},
 };
 
 pub struct ValidAST(pub AST);
@@ -245,18 +245,18 @@ impl Analyzer {
     }
 
     fn expression(&mut self, expr: &mut Expression) -> Option<SemanticType> {
-        match &mut expr.expr_type {
-            ExprType::Const(_) => Some(SemanticType::I64),
-            ExprType::Character(_) => Some(SemanticType::Char),
-            ExprType::Bool(_) => Some(SemanticType::Bool),
+        match &mut expr.inner {
+            ExprInner::Const(_) => Some(SemanticType::I64),
+            ExprInner::Character(_) => Some(SemanticType::Char),
+            ExprInner::Bool(_) => Some(SemanticType::Bool),
 
-            ExprType::Variable(var) => self.check_var(var, &expr.span),
-            ExprType::Pointer(var) => self
+            ExprInner::Variable(var) => self.check_var(var, &expr.span),
+            ExprInner::Pointer(var) => self
                 .check_var(var, &expr.span)
                 .map(|t| SemanticType::Pointer(Box::new(t))),
-            ExprType::Deref(var) => self.check_ptr(var, &expr.span),
+            ExprInner::Deref(var) => self.check_ptr(var, &expr.span),
 
-            ExprType::Arithmetic(expr1, expr2, _op, expr_sign) => {
+            ExprInner::Arithmetic(expr1, expr2, _op, expr_sign) => {
                 if let Some(type1) = self.expression(expr1)
                     && let Some(type2) = self.expression(expr2)
                 {
@@ -287,7 +287,7 @@ impl Analyzer {
                 None
             }
 
-            ExprType::Comparison(expr1, expr2, _op, expr_sign) => {
+            ExprInner::Comparison(expr1, expr2, _op, expr_sign) => {
                 if let Some(type1) = self.expression(expr1)
                     && let Some(type2) = self.expression(expr2)
                 {
@@ -332,7 +332,26 @@ impl Analyzer {
                 None
             }
 
-            ExprType::FnCall(function, call_args) => {
+            ExprInner::Cast(expr, cast_to) => {
+                if let Some(expr_type) = self.expression(expr) {
+                    if expr_type.can_cast_to(cast_to) {
+                        return Some(cast_to.clone());
+                    }
+
+                    self.err_ctx
+                        .error(expr.span.clone())
+                        .with_message("invalid type cast")
+                        .with_label(
+                            expr.span.clone(),
+                            format!("cannot cast from {} to {}", expr_type, cast_to),
+                        )
+                        .report();
+                }
+
+                None
+            }
+
+            ExprInner::FnCall(function, call_args) => {
                 let call_types: Vec<(SemanticType, Span)> = call_args
                     .iter_mut()
                     .filter_map(|e| self.expression(e).map(|t| (t, e.span.clone())))
@@ -456,6 +475,12 @@ impl SemanticType {
             SemanticType::Pointer(typ) => typ.sign(),
             SemanticType::UserType(_) => None,
         }
+    }
+
+    pub fn can_cast_to(&self, other: &SemanticType) -> bool {
+        use SemanticType::*;
+
+        matches!((self, other), (Char, I64) | (I64, Char))
     }
 }
 

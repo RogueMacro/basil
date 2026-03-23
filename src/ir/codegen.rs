@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use crate::{
     analyze::{
-        ast::{ArithmeticOp, Assignable, ExprType, Expression, Item as AstItem, Statement},
+        ast::{ArithmeticOp, Assignable, ExprInner, Expression, Item as AstItem, Statement},
         semantics::{Sign, ValidAST},
     },
     ir::{BasicBlock, Condition, IR, Item, Label, Op, OpIndex, SourceVal, VirtualReg},
@@ -134,20 +134,20 @@ impl BlockBuilder {
     }
 
     fn unroll_expr(&mut self, expr: &Expression, dest: Option<VirtualReg>) -> SourceVal {
-        match &expr.expr_type {
-            ExprType::Const(num) => SourceVal::Immediate(*num),
-            ExprType::Character(c) => SourceVal::Immediate(*c as i64),
-            ExprType::Bool(b) => SourceVal::Immediate(*b as i64),
+        match &expr.inner {
+            ExprInner::Const(num) => SourceVal::Immediate(*num),
+            ExprInner::Character(c) => SourceVal::Immediate(*c as i64),
+            ExprInner::Bool(b) => SourceVal::Immediate(*b as i64),
 
-            ExprType::Variable(var) => SourceVal::VReg(self.expect_vreg(var)),
-            ExprType::Pointer(var) => {
+            ExprInner::Variable(var) => SourceVal::VReg(self.expect_vreg(var)),
+            ExprInner::Pointer(var) => {
                 let val = self.expect_vreg(var);
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
 
                 self.ops.push(Op::AddressOf { val, dest });
                 SourceVal::VReg(dest)
             }
-            ExprType::Deref(var) => {
+            ExprInner::Deref(var) => {
                 let ptr = self.expect_vreg(var);
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
 
@@ -155,7 +155,7 @@ impl BlockBuilder {
                 SourceVal::VReg(dest)
             }
 
-            ExprType::Arithmetic(expr1, expr2, op, _sign) => {
+            ExprInner::Arithmetic(expr1, expr2, op, _sign) => {
                 // TODO: sign
                 let a = self.unroll_expr(expr1.as_ref(), None);
                 let b = self.unroll_expr(expr2.as_ref(), None);
@@ -174,7 +174,7 @@ impl BlockBuilder {
 
                 SourceVal::VReg(dest)
             }
-            ExprType::Comparison(expr1, expr2, op, sign) => {
+            ExprInner::Comparison(expr1, expr2, op, sign) => {
                 let expr1 = self.unroll_expr(expr1, None);
                 let expr2 = self.unroll_expr(expr2, None);
 
@@ -193,7 +193,7 @@ impl BlockBuilder {
                 SourceVal::VReg(dest)
             }
 
-            ExprType::FnCall(function, args) => {
+            ExprInner::FnCall(function, args) => {
                 let args = args
                     .iter()
                     .map(|e| {
@@ -214,6 +214,8 @@ impl BlockBuilder {
                     SourceVal::Immediate(0)
                 }
             }
+
+            ExprInner::Cast(expr, _typ) => self.unroll_expr(expr, dest),
         }
     }
 

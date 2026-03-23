@@ -105,6 +105,7 @@ pub enum Keyword {
     If,
     Use,
     Extern,
+    As,
 }
 
 impl Keyword {
@@ -115,6 +116,7 @@ impl Keyword {
             "if" => Keyword::If,
             "use" => Keyword::Use,
             "extern" => Keyword::Extern,
+            "as" => Keyword::As,
             _ => return None,
         };
 

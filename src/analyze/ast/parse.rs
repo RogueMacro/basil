@@ -3,7 +3,7 @@ use std::{ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, ErrorVec, Span,
     ast::{
-        AST, ArithmeticOp, Assignable, CompareOp, ExprType, Expression, Item, SemanticType,
+        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, Item, SemanticType,
         Statement,
     },
     lex::{
@@ -244,9 +244,9 @@ impl Parser {
             match self.lexer.take_current()? {
                 Some((Token::Semicolon, _)) => Ok(Statement::Expr(expr)),
                 Some((Token::Assign, _)) => {
-                    let var = match expr.expr_type {
-                        ExprType::Variable(var) => Assignable::Var(var),
-                        ExprType::Deref(var) => Assignable::Ptr(var),
+                    let var = match expr.inner {
+                        ExprInner::Variable(var) => Assignable::Var(var),
+                        ExprInner::Deref(var) => Assignable::Ptr(var),
                         _ => {
                             return Err(self
                                 .err_ctx
@@ -266,7 +266,7 @@ impl Parser {
                     })
                 }
                 Some((Token::Declare, _)) => {
-                    let ExprType::Variable(var) = expr.expr_type else {
+                    let ExprInner::Variable(var) = expr.inner else {
                         return Err(self
                             .err_ctx
                             .error(expr.span.clone())
@@ -337,7 +337,7 @@ impl Parser {
             {
                 let rhs = self.parse_single_expr()?;
                 lhs = Expression {
-                    expr_type: self.bind_expr(op, lhs, rhs),
+                    inner: self.bind_expr(op, lhs, rhs),
                     span: self.span(0..1),
                 };
 
@@ -352,42 +352,45 @@ impl Parser {
             let span = self.span((lhs.span.1.start)..(rhs.span.1.end));
             let expr_type = self.bind_expr(op, lhs, rhs);
 
-            return Ok(Expression { expr_type, span });
+            return Ok(Expression {
+                inner: expr_type,
+                span,
+            });
         }
 
         Ok(lhs)
     }
 
-    fn bind_expr(&mut self, op: Operator, lhs: Expression, rhs: Expression) -> ExprType {
+    fn bind_expr(&mut self, op: Operator, lhs: Expression, rhs: Expression) -> ExprInner {
         match op {
             Operator::Plus => {
-                ExprType::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Add, None)
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Add, None)
             }
             Operator::Minus => {
-                ExprType::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Sub, None)
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Sub, None)
             }
             Operator::Star => {
-                ExprType::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Mult, None)
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Mult, None)
             }
             Operator::Slash => {
-                ExprType::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Div, None)
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Div, None)
             }
             Operator::Equal => {
-                ExprType::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Equal, None)
+                ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Equal, None)
             }
             Operator::NotEqual => {
-                ExprType::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::NotEqual, None)
+                ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::NotEqual, None)
             }
             Operator::Less => {
-                ExprType::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Less, None)
+                ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Less, None)
             }
             Operator::LessOrEqual => {
-                ExprType::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::LessOrEqual, None)
+                ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::LessOrEqual, None)
             }
             Operator::Greater => {
-                ExprType::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Greater, None)
+                ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Greater, None)
             }
-            Operator::GreaterOrEqual => ExprType::Comparison(
+            Operator::GreaterOrEqual => ExprInner::Comparison(
                 Box::new(lhs),
                 Box::new(rhs),
                 CompareOp::GreaterOrEqual,
@@ -397,13 +400,13 @@ impl Parser {
     }
 
     fn parse_single_expr(&mut self) -> Result<Expression, Error> {
-        let token = self.lexer.take_current()?;
-        match token {
-            Some((Token::Number(num), range)) => Ok(Expression {
-                expr_type: ExprType::Const(num),
+        let token = self.expect_take_current()?;
+        let expr = match token {
+            (Token::Number(num), range) => Expression {
+                inner: ExprInner::Const(num),
                 span: self.span(range),
-            }),
-            Some((Token::Reference, ref_range)) => {
+            },
+            (Token::Reference, ref_range) => {
                 let (token, var_range) = self.expect_take_current()?;
                 let Token::Ident(var) = token else {
                     let var_span = self.span(var_range);
@@ -415,12 +418,12 @@ impl Parser {
                         .finish());
                 };
 
-                Ok(Expression {
-                    expr_type: ExprType::Pointer(var),
+                Expression {
+                    inner: ExprInner::Pointer(var),
                     span: self.span(ref_range.start..var_range.end),
-                })
+                }
             }
-            Some((Token::Operator(Operator::Star), deref_range)) => {
+            (Token::Operator(Operator::Star), deref_range) => {
                 let (token, var_range) = self.expect_take_current()?;
                 let Token::Ident(var) = token else {
                     let var_span = self.span(var_range);
@@ -432,26 +435,43 @@ impl Parser {
                         .finish());
                 };
 
-                Ok(Expression {
-                    expr_type: ExprType::Deref(var),
+                Expression {
+                    inner: ExprInner::Deref(var),
                     span: self.span(deref_range.start..var_range.end),
-                })
+                }
             }
-            Some((Token::Ident(ident), range)) => self.parse_ident_expr(ident, range),
-            Some((Token::Character(c), range)) => Ok(Expression {
-                expr_type: ExprType::Character(c),
+            (Token::Ident(ident), range) => self.parse_ident_expr(ident, range)?,
+            (Token::Character(c), range) => Expression {
+                inner: ExprInner::Character(c),
                 span: self.span(range),
-            }),
-            Some((Token::Bool(b), range)) => Ok(Expression {
-                expr_type: ExprType::Bool(b),
+            },
+            (Token::Bool(b), range) => Expression {
+                inner: ExprInner::Bool(b),
                 span: self.span(range),
-            }),
-            Some((_, range)) => Err(self
-                .err_ctx
-                .unexpected_token(self.span(range), "invalid expression")
-                .finish()),
-            None => Err(self.err_ctx.unexpected_eof(self.span_eof()).finish()),
+            },
+            (_, range) => {
+                return Err(self
+                    .err_ctx
+                    .unexpected_token(self.span(range), "invalid expression")
+                    .finish());
+            }
+        };
+
+        if let Some((Token::Keyword(Keyword::As), _)) = self.lexer.current() {
+            self.lexer.lex_one()?;
+            let typ = self.parse_type()?;
+
+            let start = expr.span.1.start;
+            let end = self.lexer.last_token_end();
+            let span = self.span(start..end);
+
+            return Ok(Expression {
+                inner: ExprInner::Cast(Box::new(expr), typ),
+                span,
+            });
         }
+
+        Ok(expr)
     }
 
     fn parse_ident_expr(
@@ -481,12 +501,12 @@ impl Parser {
             self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
 
             Ok(Expression {
-                expr_type: ExprType::FnCall(ident, args),
+                inner: ExprInner::FnCall(ident, args),
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         } else {
             Ok(Expression {
-                expr_type: ExprType::Variable(ident),
+                inner: ExprInner::Variable(ident),
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         }

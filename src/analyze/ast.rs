@@ -95,12 +95,12 @@ impl Assignable {
 
 #[derive(Debug, Clone)]
 pub struct Expression {
-    pub expr_type: ExprType,
+    pub inner: ExprInner,
     pub span: Span,
 }
 
 #[derive(Debug, Clone)]
-pub enum ExprType {
+pub enum ExprInner {
     Const(i64),
     Character(char),
     Bool(bool),
@@ -111,6 +111,8 @@ pub enum ExprType {
 
     Arithmetic(Box<Expression>, Box<Expression>, ArithmeticOp, Option<Sign>),
     Comparison(Box<Expression>, Box<Expression>, CompareOp, Option<Sign>),
+
+    Cast(Box<Expression>, SemanticType),
 
     FnCall(String, Vec<Expression>),
 }
