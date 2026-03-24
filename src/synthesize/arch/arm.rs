@@ -62,6 +62,12 @@ impl Assemble for ArmAssembler {
             );
         }
 
+        asm.code.symbols = asm
+            .functions
+            .into_iter()
+            .map(|(name, offset)| (name, offset as u64))
+            .collect();
+
         asm.code
     }
 }
@@ -226,6 +232,7 @@ impl<'c> ScopedEmitter<'c> {
             Operation::AddressOf { val, dest } => self.emit_addr_of(val, dest, idx),
             Operation::LoadPointer { ptr, dest } => self.emit_load_ptr(ptr, dest, idx),
             Operation::StorePointer { src, ptr } => self.emit_store_ptr(src, ptr, idx),
+            Operation::LoadStr { str_id, dest } => todo!(),
 
             Operation::Add { a, b, dest } => self.emit_add(a, b, dest, idx),
             Operation::Subtract { a, b, dest } => self.emit_sub(a, b, dest, idx),
@@ -256,6 +263,9 @@ impl<'c> ScopedEmitter<'c> {
                 if src != dest {
                     self.asm.emit(instr::MovReg { src, dest });
                 }
+            }
+            SourceVal::String(str_id) => {
+                todo!()
             }
         }
 
@@ -445,6 +455,7 @@ impl<'c> ScopedEmitter<'c> {
                 let src = self.map_reg_use(vreg, idx);
                 self.asm.emit(instr::MovReg { src, dest: Reg::X0 });
             }
+            SourceVal::String(str_id) => todo!(),
         }
 
         self.emit_jump(Label::FnRet);

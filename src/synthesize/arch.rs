@@ -6,15 +6,7 @@ pub mod arm;
 pub struct MachineCode {
     pub instructions: Vec<u8>,
     pub entry_point_offset: u64,
-}
-
-impl MachineCode {
-    pub fn new() -> Self {
-        Self {
-            instructions: Vec::new(),
-            entry_point_offset: 0,
-        }
-    }
+    pub symbols: Vec<(String, u64)>,
 }
 
 pub trait Assemble {

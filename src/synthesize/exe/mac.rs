@@ -1,4 +1,5 @@
 use std::{
+    ffi::{CStr, CString},
     fs::{File, Permissions},
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
@@ -9,7 +10,13 @@ use apple_codesign::{MachOSigner, SettingsScope, SigningSettings};
 use bytemuck::bytes_of;
 use mach_o::{Header, LoadCommand};
 
-use crate::synthesize::{arch::MachineCode, exe::ExecutableError};
+use crate::synthesize::{
+    arch::MachineCode,
+    exe::{
+        ExecutableError,
+        mac::mach_o::{NList, NListType},
+    },
+};
 
 use super::{
     Executable,
@@ -48,6 +55,7 @@ impl Executable for AppleExecutable {
         let MachineCode {
             instructions,
             entry_point_offset,
+            symbols,
         } = code;
 
         let pagezero_segment = SegmentCommand {
@@ -181,11 +189,11 @@ impl Executable for AppleExecutable {
             nlocrel: 0,
         };
 
-        let symtab = SymTabCommand {
+        let mut symtab = SymTabCommand {
             command: LoadCommand::SymTab,
             command_size: size_of::<SymTabCommand>() as u32,
             symoff: 0,
-            nsyms: 0,
+            nsyms: symbols.len() as u32,
             stroff: 0,
             strsize: 0,
         };
@@ -215,9 +223,35 @@ impl Executable for AppleExecutable {
         codesign[4..8].copy_from_slice(&superblob_len.to_le_bytes());
         codesign[8..12].copy_from_slice(&superblob_count.to_le_bytes());
 
+        let mut str_table_size = 1;
+        let (nlists, str_table): (Vec<_>, Vec<_>) = symbols
+            .into_iter()
+            .map(|(label, offset)| {
+                let nlist = NList {
+                    str_table_idx: str_table_size as u32,
+                    n_type: NListType::Sect,
+                    n_sect: 1,
+                    n_desc: 0,
+                    n_value: text_segment.vmaddr + offset,
+                };
+
+                str_table_size += label.len() + 1;
+
+                (nlist, CString::new(label).unwrap())
+            })
+            .unzip();
+
+        let nlists_size = size_of::<NList>() * nlists.len();
+
         linkedit_segment.file_offset = text_section_end;
-        linkedit_segment.file_size = codesign.len() as u64;
-        code_sig_cmd.data_offset = linkedit_segment.file_offset as u32;
+        linkedit_segment.file_size = (codesign.len() + nlists_size + str_table_size) as u64;
+
+        symtab.symoff = linkedit_segment.file_offset as u32;
+        symtab.nsyms = nlists.len() as u32;
+        symtab.stroff = symtab.symoff + nlists_size as u32;
+        symtab.strsize = str_table_size as u32;
+
+        code_sig_cmd.data_offset = symtab.symoff + (nlists_size + str_table_size) as u32;
         code_sig_cmd.data_size = codesign.len() as u32;
 
         let mut vec: Vec<u8> = Vec::new();
@@ -234,6 +268,9 @@ impl Executable for AppleExecutable {
         vec.extend(bytes_of(&symtab));
         vec.extend(instructions);
         vec.extend(&vec![0u8; text_seg_padding]);
+        vec.extend(nlists.iter().flat_map(bytes_of));
+        vec.push(0); // First byte of string table must be 0, kind of like null-ptr
+        vec.extend(str_table.iter().flat_map(|s| s.to_bytes_with_nul()));
         vec.extend(&codesign);
 
         let mut file = File::create(out_path).unwrap();

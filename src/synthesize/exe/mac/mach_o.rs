@@ -1,6 +1,8 @@
 use bitflags::bitflags;
 use bytemuck::NoUninit;
 
+// Mach-O header files found here: /Library/Developer/CommandLineTools/SDKs/MacOSX.sdk/usr/include/mach-o
+
 /// The Mach-O header, located at the top
 #[repr(C)]
 #[derive(NoUninit, Copy, Clone)]
@@ -209,4 +211,20 @@ pub struct DySymTabCommand {
     pub nextrel: u32,
     pub locreloff: u32,
     pub nlocrel: u32,
+}
+
+#[repr(C)]
+#[derive(NoUninit, Clone, Copy)]
+pub struct NList {
+    pub str_table_idx: u32,
+    pub n_type: NListType,
+    pub n_sect: u8,
+    pub n_desc: u16,
+    pub n_value: u64,
+}
+
+#[repr(u8)]
+#[derive(NoUninit, Clone, Copy)]
+pub enum NListType {
+    Sect = 0xe,
 }
