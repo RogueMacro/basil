@@ -133,7 +133,7 @@ bitflags! {
 }
 
 #[repr(C)]
-#[derive(NoUninit, Copy, Clone)]
+#[derive(NoUninit, Clone, Copy)]
 pub struct SectionHeader {
     pub section_name: [u8; 16],
     pub segment_name: [u8; 16],
@@ -143,10 +143,17 @@ pub struct SectionHeader {
     pub align: u32,
     pub reloff: u32,
     pub nreloc: u32,
-    pub flags: u32,
+    pub flags: SectionFlags,
     pub _reserved1: u32,
     pub _reserved2: u32,
     pub _reserved3: u32,
+}
+
+#[repr(u32)]
+#[derive(NoUninit, Clone, Copy)]
+pub enum SectionFlags {
+    Regular = 0,
+    CStringLiterals = 2,
 }
 
 #[repr(C)]

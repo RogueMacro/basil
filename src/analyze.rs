@@ -49,8 +49,8 @@ impl<'c> ErrorBuilder<'c> {
 
     pub fn with_label(mut self, span: Span, msg: impl ToString) -> Self {
         let label = Label::new(span)
-            // .with_color(ariadne::Color::BrightRed)
-            .with_color(self.context.color_gen.next())
+            .with_color(ariadne::Color::BrightRed)
+            // .with_color(self.context.color_gen.next())
             .with_message(msg);
 
         self.builder.add_label(label);

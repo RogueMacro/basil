@@ -170,12 +170,75 @@ impl Lexer {
             )));
         }
 
+        if c == '"' {
+            return self.lex_string().map(Some);
+        }
+
         Err(self
             .err_ctx
             .unexpected_token(
                 self.span(self.index..(self.index + 1)),
                 "unexpected character",
             )
+            .finish())
+    }
+
+    fn lex_string(&mut self) -> Result<(Token, Range<usize>), Error> {
+        assert!(self.cur_char() == Some('\"'));
+
+        let start = self.index;
+        self.index += 1;
+        let mut string = String::new();
+        while let Some(c) = self.cur_char() {
+            if c == '"' {
+                self.index += 1;
+                return Ok((Token::String(string), start..self.index));
+            }
+
+            if c == '\\' {
+                self.index += 1;
+                let Some(next) = self.cur_char() else {
+                    return Err(self
+                        .err_ctx
+                        .unexpected_eof(self.span(start..self.index))
+                        .finish());
+                };
+
+                let escaped = match next {
+                    '\\' => '\\',
+                    '"' => '"',
+                    '\'' => '\'',
+                    'n' => '\n',
+                    _ => {
+                        let span = self.span((self.index - 1)..self.index);
+                        return Err(self
+                            .err_ctx
+                            .error(span.clone())
+                            .with_message("invalid escape character")
+                            .with_label(span, "this is not a valid escape character")
+                            .finish());
+                    }
+                };
+
+                string.push(escaped);
+            } else if c.is_ascii() {
+                string.push(c);
+            } else {
+                let span = self.span((self.index - 1)..self.index);
+                return Err(self
+                    .err_ctx
+                    .error(span.clone())
+                    .with_message("invalid string")
+                    .with_label(span, "not a valid character")
+                    .finish());
+            }
+
+            self.index += 1;
+        }
+
+        Err(self
+            .err_ctx
+            .unexpected_eof(self.span(start..self.index))
             .finish())
     }
 

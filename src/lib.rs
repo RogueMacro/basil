@@ -17,7 +17,7 @@ use crate::{
     },
     ir::IR,
     synthesize::{
-        arch::{Assemble, MachineCode, arm::ArmAssembler},
+        arch::{Assembler, MachineCode, UnfinishedCode, arm::ArmAssembler},
         exe::Executable,
     },
 };
@@ -28,11 +28,11 @@ pub mod ir;
 pub mod synthesize;
 
 #[derive(Default)]
-pub struct Compiler<E: Executable> {
-    _marker: PhantomData<E>,
+pub struct Compiler<E: Executable, A: Assembler> {
+    _marker: PhantomData<(E, A)>,
 }
 
-impl<E: Executable> Compiler<E> {
+impl<E: Executable, A: Assembler> Compiler<E, A> {
     pub fn compile(
         self,
         path: impl Into<PathBuf>,
@@ -56,7 +56,11 @@ impl<E: Executable> Compiler<E> {
         Ok(())
     }
 
-    pub fn compile_source(&self, name: Rc<PathBuf>, source: &str) -> Result<MachineCode, ErrorVec> {
+    pub fn compile_source(
+        &self,
+        name: Rc<PathBuf>,
+        source: &str,
+    ) -> Result<UnfinishedCode<A>, ErrorVec> {
         let mut ast = load_ast(name.clone(), source)?;
 
         let mut libmap = HashMap::new();
@@ -73,7 +77,7 @@ impl<E: Executable> Compiler<E> {
         let ir = IR::generate(ast);
         println!("{}", ir);
 
-        let code = ArmAssembler::assemble(ir);
+        let code = A::assemble(ir);
 
         Ok(code)
     }

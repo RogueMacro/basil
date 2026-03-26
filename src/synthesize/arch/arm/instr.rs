@@ -1,6 +1,6 @@
 #![allow(clippy::unusual_byte_groupings)]
 
-use ux::{i7, i12, i19, i26, u12};
+use ux::{i7, i12, i19, i21, i26, u12};
 
 use crate::ir::Condition;
 
@@ -99,6 +99,37 @@ impl Instruction for Add {
                 (0b1001000100 << 22) | ((imm as u32) << 10) | (a << 5) | dest
             }
         }
+    }
+}
+
+/// ADRP instruction.
+///
+/// Forms a PC-relative address to a 4KB page. The immediate value is left-shifted by 12 bits to
+/// form an address which is a multiple of 4KB.
+///
+/// Encoding:
+/// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+/// 1  immlo 1  0  0  0  0  immhi                                                    Rd
+///
+/// - immlo: lowest 2 bits of address
+/// - immhi: highest 19 bits of address
+/// - Rd: destination register
+#[derive(Debug, Clone, Copy)]
+pub struct Adrp {
+    pub page_addr: i21,
+    pub dest: Register,
+}
+
+impl Instruction for Adrp {
+    fn encode(&self) -> u32 {
+        let page_addr: i32 = self.page_addr.into();
+        let page_addr = page_addr as u32;
+        let dest = self.dest as u32;
+
+        let up19 = page_addr & (0b1111111111111111111 << 2);
+        let lo2 = page_addr & 0b11;
+
+        (0b1_00_10000 << 24) | (lo2 << 29) | (up19 << 5) | dest
     }
 }
 

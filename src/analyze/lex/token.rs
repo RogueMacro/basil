@@ -4,6 +4,7 @@ pub enum Token {
 
     Number(i64),
     Character(char),
+    String(String),
     Bool(bool),
 
     Ident(String),

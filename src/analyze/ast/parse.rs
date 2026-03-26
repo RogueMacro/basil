@@ -445,6 +445,10 @@ impl Parser {
                 inner: ExprInner::Character(c),
                 span: self.span(range),
             },
+            (Token::String(string), range) => Expression {
+                inner: ExprInner::String(string),
+                span: self.span(range),
+            },
             (Token::Bool(b), range) => Expression {
                 inner: ExprInner::Bool(b),
                 span: self.span(range),

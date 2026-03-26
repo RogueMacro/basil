@@ -1,8 +1,11 @@
 use ux::u12;
 
-use crate::synthesize::arch::arm::{
-    instr::{self, ImmShift16},
-    reg::Reg,
+use crate::synthesize::arch::{
+    Assembler,
+    arm::{
+        instr::{self, ImmShift16},
+        reg::Reg,
+    },
 };
 
 use super::ArmAssembler;
@@ -35,8 +38,13 @@ pub fn exit(asm: &mut ArmAssembler) {
 
 fn syscall(asm: &mut ArmAssembler, typ: SyscallType) {
     asm.emit(instr::Movz {
-        shift: ImmShift16::L0,
-        imm_value: typ as u16,
+        shift: ImmShift16::L16,
+        imm_value: 1 << 9,
+        dest: Reg::X16,
+    });
+    asm.emit(instr::Add {
+        a: Reg::X16,
+        b: instr::Input::Imm(ux::i12::new(typ as u16 as i16)),
         dest: Reg::X16,
     });
 

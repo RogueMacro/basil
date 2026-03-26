@@ -12,47 +12,46 @@ impl IR {
     pub fn generate(ast: ValidAST) -> IR {
         let ast = ast.0;
 
-        let mut items = Vec::new();
+        let mut ir = IR::default();
 
         for item in ast.items {
             if let AstItem::Function {
                 name, body, args, ..
             } = item
             {
-                let mut block_builder = BlockBuilder::new();
+                let mut block_builder = BlockBuilder::new(&mut ir);
                 let args = args
                     .iter()
                     .map(|(arg, _, _)| block_builder.get_or_insert_vreg(arg))
                     .collect();
 
-                items.push(Item::Function {
-                    name,
-                    args,
-                    bb: block_builder.build(body),
-                });
+                let bb = block_builder.build(body);
+                ir.items.push(Item::Function { name, args, bb });
             };
         }
 
-        IR { items }
+        ir
     }
 }
 
-struct BlockBuilder {
+struct BlockBuilder<'ir> {
     vregs: HashMap<String, VirtualReg>,
     vreg_counter: u32,
     labels: HashMap<OpIndex, Vec<Label>>,
     label_counter: u32,
     ops: Vec<Op>,
+    ir: &'ir mut IR,
 }
 
-impl BlockBuilder {
-    pub fn new() -> Self {
+impl<'ir> BlockBuilder<'ir> {
+    pub fn new(ir: &'ir mut IR) -> Self {
         Self {
             vregs: HashMap::new(),
             vreg_counter: 0,
             labels: HashMap::new(),
             label_counter: 0,
             ops: Vec::new(),
+            ir,
         }
     }
 
@@ -73,7 +72,7 @@ impl BlockBuilder {
                     assert!(!self.vregs.contains_key(&var), "variable declared twice");
 
                     let dest = self.get_or_insert_vreg(var);
-                    let src = self.unroll_expr(&expr, Some(dest));
+                    let src = self.unroll_expr(expr, Some(dest));
 
                     if src != SourceVal::VReg(dest) {
                         self.ops.push(Op::Assign { src, dest });
@@ -81,7 +80,7 @@ impl BlockBuilder {
                 }
                 Statement::Assign { var, expr, .. } => {
                     let dest = self.get_or_insert_vreg(var.symbol());
-                    let src = self.unroll_expr(&expr, Some(dest));
+                    let src = self.unroll_expr(expr, Some(dest));
 
                     match var {
                         Assignable::Var(_) => {
@@ -96,11 +95,11 @@ impl BlockBuilder {
                     }
                 }
                 Statement::Return(expr) => {
-                    let value = self.unroll_expr(&expr, None);
+                    let value = self.unroll_expr(expr, None);
                     self.ops.push(Op::Return { value });
                 }
                 Statement::If { guard, body } => {
-                    let cond = self.unroll_expr(&guard, None);
+                    let cond = self.unroll_expr(guard, None);
                     let cond = self.src_to_vreg(cond);
                     let label = self.reserve_label();
                     self.ops.push(Op::BranchIfFalse { cond, label });
@@ -127,28 +126,32 @@ impl BlockBuilder {
                     self.vreg_counter = outer_vreg_counter;
                 }
                 Statement::Expr(expr) => {
-                    self.unroll_expr(&expr, None);
+                    self.unroll_expr(expr, None);
                 }
             }
         }
     }
 
-    fn unroll_expr(&mut self, expr: &Expression, dest: Option<VirtualReg>) -> SourceVal {
-        match &expr.inner {
-            ExprInner::Const(num) => SourceVal::Immediate(*num),
-            ExprInner::Character(c) => SourceVal::Immediate(*c as i64),
-            ExprInner::Bool(b) => SourceVal::Immediate(*b as i64),
+    fn unroll_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
+        match expr.inner {
+            ExprInner::Const(num) => SourceVal::Immediate(num),
+            ExprInner::Character(c) => SourceVal::Immediate(c as i64),
+            ExprInner::String(string) => {
+                let str_id = self.ir.alloc_str(string);
+                SourceVal::String(str_id)
+            }
+            ExprInner::Bool(b) => SourceVal::Immediate(b as i64),
 
-            ExprInner::Variable(var) => SourceVal::VReg(self.expect_vreg(var)),
+            ExprInner::Variable(var) => SourceVal::VReg(self.expect_vreg(&var)),
             ExprInner::Pointer(var) => {
-                let val = self.expect_vreg(var);
+                let val = self.expect_vreg(&var);
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
 
                 self.ops.push(Op::AddressOf { val, dest });
                 SourceVal::VReg(dest)
             }
             ExprInner::Deref(var) => {
-                let ptr = self.expect_vreg(var);
+                let ptr = self.expect_vreg(&var);
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
 
                 self.ops.push(Op::LoadPointer { ptr, dest });
@@ -157,8 +160,8 @@ impl BlockBuilder {
 
             ExprInner::Arithmetic(expr1, expr2, op, _sign) => {
                 // TODO: sign
-                let a = self.unroll_expr(expr1.as_ref(), None);
-                let b = self.unroll_expr(expr2.as_ref(), None);
+                let a = self.unroll_expr(*expr1, None);
+                let b = self.unroll_expr(*expr2, None);
 
                 let a = self.src_to_vreg(a);
                 let b = self.src_to_vreg(b);
@@ -175,8 +178,8 @@ impl BlockBuilder {
                 SourceVal::VReg(dest)
             }
             ExprInner::Comparison(expr1, expr2, op, sign) => {
-                let expr1 = self.unroll_expr(expr1, None);
-                let expr2 = self.unroll_expr(expr2, None);
+                let expr1 = self.unroll_expr(*expr1, None);
+                let expr2 = self.unroll_expr(*expr2, None);
 
                 let expr1 = self.src_to_vreg(expr1);
                 let expr2 = self.src_to_vreg(expr2);
@@ -186,7 +189,7 @@ impl BlockBuilder {
                 self.ops.push(Op::Compare {
                     a: expr1,
                     b: expr2,
-                    cond: Condition::from_ast_op(*op, matches!(sign, Some(Sign::Signed))),
+                    cond: Condition::from_ast_op(op, matches!(sign, Some(Sign::Signed))),
                     dest,
                 });
 
@@ -195,7 +198,7 @@ impl BlockBuilder {
 
             ExprInner::FnCall(function, args) => {
                 let args = args
-                    .iter()
+                    .into_iter()
                     .map(|e| {
                         let src = self.unroll_expr(e, None);
                         self.src_to_vreg(src)
@@ -215,7 +218,7 @@ impl BlockBuilder {
                 }
             }
 
-            ExprInner::Cast(expr, _typ) => self.unroll_expr(expr, dest),
+            ExprInner::Cast(expr, _typ) => self.unroll_expr(*expr, dest),
         }
     }
 
@@ -250,6 +253,11 @@ impl BlockBuilder {
                 dest
             }
             SourceVal::VReg(vreg) => vreg,
+            SourceVal::String(str_id) => {
+                let dest = self.get_vreg();
+                self.ops.push(Op::LoadStr { str_id, dest });
+                dest
+            }
         }
     }
 

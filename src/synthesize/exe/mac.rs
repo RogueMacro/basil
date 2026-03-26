@@ -1,9 +1,11 @@
 use std::{
     ffi::{CStr, CString},
     fs::{File, Permissions},
+    io::Write,
     os::unix::fs::PermissionsExt,
     path::{Path, PathBuf},
     process::ExitStatus,
+    str::FromStr,
 };
 
 use apple_codesign::{MachOSigner, SettingsScope, SigningSettings};
@@ -11,10 +13,10 @@ use bytemuck::bytes_of;
 use mach_o::{Header, LoadCommand};
 
 use crate::synthesize::{
-    arch::MachineCode,
+    arch::{Assembler, MachineCode, UnfinishedCode},
     exe::{
         ExecutableError,
-        mac::mach_o::{NList, NListType},
+        mac::mach_o::{NList, NListType, SectionFlags},
     },
 };
 
@@ -35,7 +37,9 @@ pub struct AppleExecutable {
 }
 
 impl Executable for AppleExecutable {
-    fn build(&mut self, code: MachineCode, out_path: impl AsRef<Path>) {
+    fn build<A: Assembler>(&mut self, code: UnfinishedCode<A>, out_path: impl AsRef<Path>) {
+        // TODO: transform into readable code
+
         let out_path = out_path.as_ref();
 
         // Mach-O file:
@@ -43,6 +47,7 @@ impl Executable for AppleExecutable {
         // LC_SEGMENT (__PAGEZERO)
         // LC_SEGMENT (__TEXT)
         // __text section header
+        // __cstring section header
         // LC_MAIN
         // LC_LOAD_DYLINKER
         // LC_SEGMENT_64 (__LINKEDIT)
@@ -50,12 +55,42 @@ impl Executable for AppleExecutable {
         // LC_DYSYMTAB
         // LC_SYMTAB
         // __text section (code)
+        // __cstring section
+        // symbol table (nlists + string table)
         // code signature
+
+        let linker_path = b"/usr/lib/dyld";
+        let dylinker_cmd_size = align(size_of::<DyLinkerCommand>() + linker_path.len(), 8);
+        let path_len_with_padding = dylinker_cmd_size - size_of::<DyLinkerCommand>();
+        let mut padded_linker_path = vec![0u8; path_len_with_padding];
+        padded_linker_path[..linker_path.len()].copy_from_slice(linker_path);
+
+        let dylinker = DyLinkerCommand {
+            command: LoadCommand::LoadDyLinker,
+            command_size: dylinker_cmd_size as u32,
+            path_str_offset: size_of::<DyLinkerCommand>() as u32,
+        };
+
+        let text_data_offset = size_of::<Header>()
+            + size_of::<SegmentCommand>() // __PAGEZERO
+            + size_of::<SegmentCommand>() // __TEXT
+            + size_of::<SectionHeader>() // __TEXT,__text
+            + size_of::<SectionHeader>() // __TEXT,__cstring
+            + size_of::<EntryPointCommand>() // LcEntryPoint
+            + dylinker.command_size as usize
+            + size_of::<SegmentCommand>()
+            + size_of::<LinkEditDataCommand>()
+            + size_of::<DySymTabCommand>()
+            + size_of::<SymTabCommand>();
+
+        let code_size = code.size();
+        let code = code.finalize(text_data_offset + code_size);
 
         let MachineCode {
             instructions,
             entry_point_offset,
             symbols,
+            str_literals,
         } = code;
 
         let pagezero_segment = SegmentCommand {
@@ -72,7 +107,8 @@ impl Executable for AppleExecutable {
             flags: 0,
         };
 
-        let text_segment_size = (size_of::<SegmentCommand>() + size_of::<SectionHeader>()) as u32;
+        let text_segment_size =
+            (size_of::<SegmentCommand>() + size_of::<SectionHeader>() * 2) as u32;
         let mut text_segment = SegmentCommand {
             command: LoadCommand::Segment,
             command_size: text_segment_size,
@@ -83,7 +119,7 @@ impl Executable for AppleExecutable {
             file_size: 0, // filled in later
             max_prot: MemoryPermissions::ReadExecute,
             init_prot: MemoryPermissions::ReadExecute,
-            section_count: 1,
+            section_count: 2,
             flags: 0,
         };
 
@@ -91,12 +127,28 @@ impl Executable for AppleExecutable {
             section_name: b"__text\0\0\0\0\0\0\0\0\0\0".to_owned(),
             segment_name: b"__TEXT\0\0\0\0\0\0\0\0\0\0".to_owned(),
             addr: 0x0, // filled in later
-            size: instructions.len() as u64,
+            size: code_size as u64,
             offset: 0x0, // filled in later
             align: 0x2,
             reloff: 0,
             nreloc: 0,
-            flags: 0,
+            flags: SectionFlags::Regular,
+            _reserved1: 0,
+            _reserved2: 0,
+            _reserved3: 0,
+        };
+
+        let str_literal_size: usize = str_literals.iter().map(|s| s.len() + 1).sum();
+        let mut cstring_section_header = SectionHeader {
+            section_name: b"__cstring\0\0\0\0\0\0\0".to_owned(),
+            segment_name: b"__TEXT\0\0\0\0\0\0\0\0\0\0".to_owned(),
+            addr: 0x0, // filled in later
+            size: str_literal_size as u64,
+            offset: 0x0, // filled in later
+            align: 0x1,
+            reloff: 0,
+            nreloc: 0,
+            flags: SectionFlags::CStringLiterals,
             _reserved1: 0,
             _reserved2: 0,
             _reserved3: 0,
@@ -109,32 +161,12 @@ impl Executable for AppleExecutable {
             stack_size: 0,
         };
 
-        let linker_path = b"/usr/lib/dyld";
-        let dylinker_cmd_size = align(size_of::<DyLinkerCommand>() + linker_path.len(), 8);
-        let path_len_with_padding = dylinker_cmd_size - size_of::<DyLinkerCommand>();
-        let mut padded_linker_path = vec![0u8; path_len_with_padding];
-        padded_linker_path[..linker_path.len()].copy_from_slice(linker_path);
-
-        let dylinker = DyLinkerCommand {
-            command: LoadCommand::LoadDyLinker,
-            command_size: dylinker_cmd_size as u32,
-            path_str_offset: size_of::<DyLinkerCommand>() as u32,
-        };
-
-        let text_data_offset = (size_of::<Header>()
-            + size_of_val(&pagezero_segment)
-            + size_of_val(&text_segment)
-            + size_of_val(&text_section_header)
-            + size_of_val(&entry_point)
-            + dylinker.command_size as usize
-            + size_of::<SegmentCommand>()
-            + size_of::<LinkEditDataCommand>()
-            + size_of::<DySymTabCommand>()
-            + size_of::<SymTabCommand>()) as u32;
-
-        text_section_header.offset = text_data_offset;
+        text_section_header.offset = text_data_offset as u32;
         text_section_header.addr = text_segment.vmaddr;
-        entry_point.main_offset += text_data_offset as u64;
+        cstring_section_header.offset =
+            text_section_header.offset + text_section_header.size as u32;
+        cstring_section_header.addr = text_section_header.addr + text_section_header.size;
+        entry_point.main_offset += text_section_header.offset as u64;
 
         let text_section_end =
             page_align(text_section_header.offset as u64 + text_section_header.size);
@@ -142,8 +174,8 @@ impl Executable for AppleExecutable {
         text_segment.vmsize = text_section_end;
 
         let text_seg_padding = text_section_end as usize
-            - text_section_header.offset as usize
-            - text_section_header.size as usize;
+            - cstring_section_header.offset as usize
+            - cstring_section_header.size as usize;
 
         let mut linkedit_segment = SegmentCommand {
             command: LoadCommand::Segment,
@@ -259,6 +291,7 @@ impl Executable for AppleExecutable {
         vec.extend(bytes_of(&pagezero_segment));
         vec.extend(bytes_of(&text_segment));
         vec.extend(bytes_of(&text_section_header));
+        vec.extend(bytes_of(&cstring_section_header));
         vec.extend(bytes_of(&entry_point));
         vec.extend(bytes_of(&dylinker));
         vec.extend(&padded_linker_path);
@@ -267,14 +300,20 @@ impl Executable for AppleExecutable {
         vec.extend(bytes_of(&dysymtab));
         vec.extend(bytes_of(&symtab));
         vec.extend(instructions);
+        vec.extend(
+            str_literals
+                .iter()
+                .flat_map(|s| CString::from_str(s).unwrap().into_bytes_with_nul()),
+        );
         vec.extend(&vec![0u8; text_seg_padding]);
         vec.extend(nlists.iter().flat_map(bytes_of));
-        vec.push(0); // First byte of string table must be 0, kind of like null-ptr
+        vec.push(0); // First byte of string table must be 0, so nlists can point to empty string
         vec.extend(str_table.iter().flat_map(|s| s.to_bytes_with_nul()));
         vec.extend(&codesign);
 
         let mut file = File::create(out_path).unwrap();
 
+        // file.write_all(&vec).unwrap();
         let signer = MachOSigner::new(&vec).unwrap();
         let mut sign_settings = SigningSettings::default();
         sign_settings.set_binary_identifier(

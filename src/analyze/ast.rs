@@ -103,6 +103,7 @@ pub struct Expression {
 pub enum ExprInner {
     Const(i64),
     Character(char),
+    String(String),
     Bool(bool),
 
     Variable(String),

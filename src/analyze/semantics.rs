@@ -248,6 +248,7 @@ impl Analyzer {
         match &mut expr.inner {
             ExprInner::Const(_) => Some(SemanticType::I64),
             ExprInner::Character(_) => Some(SemanticType::Char),
+            ExprInner::String(_) => Some(SemanticType::Pointer(Box::new(SemanticType::Char))),
             ExprInner::Bool(_) => Some(SemanticType::Bool),
 
             ExprInner::Variable(var) => self.check_var(var, &expr.span),
@@ -480,7 +481,7 @@ impl SemanticType {
     pub fn can_cast_to(&self, other: &SemanticType) -> bool {
         use SemanticType::*;
 
-        matches!((self, other), (Char, I64) | (I64, Char))
+        matches!((self, other), (Char, I64) | (I64, Char) | (Pointer(_), I64))
     }
 }
 

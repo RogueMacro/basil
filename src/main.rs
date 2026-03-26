@@ -6,7 +6,10 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use istind::{Compiler, synthesize::exe::mac::AppleExecutable};
+use istind::{
+    Compiler,
+    synthesize::{arch::arm::ArmAssembler, exe::mac::AppleExecutable},
+};
 
 #[derive(Parser)]
 #[command(version)]
@@ -75,7 +78,7 @@ fn build(file: &Path, asm: bool) -> Result<PathBuf, Error> {
         module.to_string_lossy(),
     );
 
-    let compiler = Compiler::<AppleExecutable>::default();
+    let compiler = Compiler::<AppleExecutable, ArmAssembler>::default();
 
     let out_path = istind::files::target_mod(module)?;
 

@@ -11,9 +11,20 @@ use crate::{
 pub mod codegen;
 pub mod lifetime;
 
+#[derive(Default)]
 pub struct IR {
     pub items: Vec<Item>,
+    pub strings: HashMap<String, StrId>,
 }
+
+impl IR {
+    pub fn alloc_str(&mut self, string: String) -> StrId {
+        let len = self.strings.len();
+        *self.strings.entry(string).or_insert(len)
+    }
+}
+
+pub type StrId = usize;
 
 pub enum Item {
     Function {
@@ -110,6 +121,10 @@ pub enum Operation {
         src: VirtualReg,
         ptr: VirtualReg,
     },
+    LoadStr {
+        str_id: StrId,
+        dest: VirtualReg,
+    },
     Add {
         a: VirtualReg,
         b: VirtualReg,
@@ -179,6 +194,9 @@ impl Operation {
             Operation::StorePointer { src, ptr } => {
                 push(Some(*src));
                 push(Some(*ptr));
+            }
+            Operation::LoadStr { str_id: _, dest } => {
+                push(Some(*dest));
             }
 
             Operation::Add { a, b, dest } | Operation::Subtract { a, b, dest } => {
@@ -289,7 +307,7 @@ impl Condition {
 pub enum SourceVal {
     Immediate(i64),
     VReg(VirtualReg),
-    // Addr(VirtualReg),
+    String(StrId),
 }
 
 impl SourceVal {
@@ -307,7 +325,7 @@ impl fmt::Display for SourceVal {
         match self {
             SourceVal::Immediate(n) => write!(f, "{}", n),
             SourceVal::VReg(vreg) => write!(f, "{}", vreg),
-            // SourceVal::Addr(vreg) => write!(f, "&{}", vreg.0),
+            SourceVal::String(str_id) => write!(f, "string #{}", str_id),
         }
     }
 }
@@ -323,6 +341,14 @@ impl fmt::Display for VirtualReg {
 
 impl fmt::Display for IR {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        for (string, id) in self.strings.iter() {
+            writeln!(f, "#{} => \"{}\"", id, string)?;
+        }
+
+        if !self.strings.is_empty() {
+            writeln!(f)?;
+        }
+
         for item in self.items.iter() {
             let Item::Function { name, args, bb } = item;
             write!(f, "fn {}(", name)?;
@@ -354,6 +380,9 @@ impl fmt::Display for IR {
                     }
                     Operation::StorePointer { src, ptr } => {
                         writeln!(f, "    deref {} = {}", ptr, src)?
+                    }
+                    Operation::LoadStr { str_id, dest } => {
+                        writeln!(f, "    {} = string #{}", dest, str_id)?
                     }
 
                     Operation::Add { a, b, dest } => writeln!(f, "    {} = {} + {}", dest, a, b)?,

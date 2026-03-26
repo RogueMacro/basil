@@ -1,12 +1,12 @@
 use std::collections::HashMap;
 
-use num_traits::{FromPrimitive, ToPrimitive};
-use ux::{i7, i12, i19, i26, u12};
+use num_traits::FromPrimitive;
+use ux::{i7, i12, i19, i21, i26, u12};
 
 use crate::{
-    ir::{Condition, IR, Item, Label, OpIndex, Operation, SourceVal, VirtualReg},
+    ir::{Condition, IR, Item, Label, OpIndex, Operation, SourceVal, StrId, VirtualReg},
     synthesize::arch::{
-        Assemble, MachineCode,
+        Assembler, MachineCode, UnfinishedCode,
         arm::{
             instr::{ImmShift16, Instruction},
             reg::{Allocator, Reg, Register},
@@ -27,14 +27,24 @@ type InstrIndex = usize;
 #[derive(Default)]
 pub struct ArmAssembler {
     code: MachineCode,
-    functions: HashMap<String, usize>,
-    fn_calls: Vec<(String, usize)>,
+    functions: HashMap<String, InstrIndex>,
+    fn_calls: Vec<(String, InstrIndex)>,
     stacks: Vec<i12>,
+    str_literal_offsets: HashMap<StrId, usize>,
+
+    lazy_emitters: Vec<Box<dyn Fn(&mut ArmAssembler, usize)>>,
 }
 
-impl Assemble for ArmAssembler {
-    fn assemble(ir: IR) -> MachineCode {
+impl Assembler for ArmAssembler {
+    fn assemble(ir: IR) -> UnfinishedCode<Self> {
         let mut asm = ArmAssembler::default();
+
+        let mut str_offset = 0;
+        for (string, id) in ir.strings {
+            asm.str_literal_offsets.insert(id, str_offset);
+            str_offset += string.len() + 1; // c-string
+            asm.code.str_literals.push(string);
+        }
 
         for item in ir.items {
             asm.asm_item(item);
@@ -42,6 +52,7 @@ impl Assemble for ArmAssembler {
 
         builtin::assemble(&mut asm);
 
+        let entry_point_offset = asm.current_offset();
         let mut emitter = ScopedEmitter::new(&mut asm, Allocator::default(), HashMap::new());
         emitter.emit_call(MAIN_FN.to_owned(), vec![], None, 0);
 
@@ -64,11 +75,27 @@ impl Assemble for ArmAssembler {
 
         asm.code.symbols = asm
             .functions
-            .into_iter()
-            .map(|(name, offset)| (name, offset as u64))
+            .iter()
+            .map(|(name, &offset)| (name.clone(), offset as u64))
             .collect();
 
         asm.code
+            .symbols
+            .push((String::from("_entry_point"), entry_point_offset as u64));
+
+        UnfinishedCode(asm)
+    }
+
+    fn current_offset(&self) -> usize {
+        self.code.instructions.len()
+    }
+
+    fn into_machine_code(mut self, str_literal_offset: usize) -> MachineCode {
+        for emit in std::mem::take(&mut self.lazy_emitters) {
+            emit(&mut self, str_literal_offset);
+        }
+
+        self.code
     }
 }
 
@@ -80,10 +107,6 @@ impl ArmAssembler {
     fn emit_at(&mut self, offset: usize, instr: impl Instruction) {
         let bytes = instr.encode().to_le_bytes();
         self.code.instructions[offset..(offset + 4)].copy_from_slice(&bytes);
-    }
-
-    fn current_offset(&self) -> usize {
-        self.code.instructions.len()
     }
 
     fn asm_item(&mut self, item: Item) {
@@ -177,16 +200,28 @@ impl ArmAssembler {
     fn emit_nop(&mut self) {
         self.emit(instr::Nop);
     }
-}
 
-type LazyEmit = Box<dyn FnOnce(&mut ScopedEmitter)>;
+    fn lazy_emit<F, I>(&mut self, emit: F)
+    where
+        F: Fn(usize) -> I + 'static,
+        I: Instruction,
+    {
+        let instr_offset = self.current_offset();
+        self.lazy_emitters.push(Box::new(move |asm, str_offset| {
+            let instr = emit(str_offset);
+            asm.emit_at(instr_offset, instr);
+        }));
+
+        self.emit_nop();
+    }
+}
 
 struct ScopedEmitter<'c> {
     asm: &'c mut ArmAssembler,
     alloc: Allocator,
     ir_labels: HashMap<OpIndex, Vec<Label>>,
     mapped_labels: HashMap<Label, InstrIndex>,
-    lazy_emits: Vec<LazyEmit>,
+    lazy_emits: Vec<Box<dyn FnOnce(&mut ScopedEmitter)>>,
 }
 
 impl<'c> ScopedEmitter<'c> {
@@ -265,7 +300,32 @@ impl<'c> ScopedEmitter<'c> {
                 }
             }
             SourceVal::String(str_id) => {
-                todo!()
+                let rel_str_offset = *self
+                    .asm
+                    .str_literal_offsets
+                    .get(&str_id)
+                    .unwrap_or_else(|| panic!("no string found for str_id #{}", str_id));
+
+                let cur_offset = self.asm.current_offset();
+                // let rel_str_offset = rel_str_offset + 0x100000000;
+
+                self.asm.lazy_emit(move |str_table_offset| {
+                    let abs_offset = str_table_offset + rel_str_offset;
+                    let page_addr = i21::new((abs_offset / 4096) as i32);
+
+                    instr::Adrp { page_addr, dest }
+                });
+
+                self.asm.lazy_emit(move |str_table_offset| {
+                    let abs_offset = str_table_offset + rel_str_offset;
+                    let in_page_offset = i12::new((abs_offset % 4096) as i16);
+
+                    instr::Add {
+                        a: dest,
+                        b: instr::Input::Imm(in_page_offset),
+                        dest,
+                    }
+                });
             }
         }
 

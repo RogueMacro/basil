@@ -1,8 +1,14 @@
 // file descriptors:
 // stdout = 1
 
-fn print(buf: &char) {
-    std::write(1, buf, 1);
+// TODO: bug: invalid ir generated?
+//fn f() -> i64 {
+//    return std::write(1, 0, 0);
+//}
+
+fn print(buf: &char, len: i64) -> i64 {
+    r := std::write(1, buf, len);
+    return r;
 }
 
 fn mod(dividend: i64, divisor: i64) -> i64 {
@@ -10,7 +16,7 @@ fn mod(dividend: i64, divisor: i64) -> i64 {
     return dividend - n * divisor;
 }
 
-fn write(fd: i64, buf: &char, count: i64);
+fn write(fd: i64, buf: &char, count: i64) -> i64;
 
 fn exit(status: i64);
 
