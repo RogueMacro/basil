@@ -296,6 +296,7 @@ impl Parser {
         match keyword {
             Keyword::Return => self.parse_return(),
             Keyword::If => self.parse_if(),
+            Keyword::While => self.parse_while_loop(),
             _ => Err(self
                 .err_ctx
                 .unexpected_token(self.span(range), "unexpected keyword")
@@ -315,6 +316,13 @@ impl Parser {
         let body = self.parse_block()?;
 
         Ok(Statement::If { guard, body })
+    }
+
+    fn parse_while_loop(&mut self) -> Result<Statement, Error> {
+        let guard = self.parse_expr()?;
+        let body = self.parse_block()?;
+
+        Ok(Statement::WhileLoop { guard, body })
     }
 
     fn parse_expr(&mut self) -> Result<Expression, Error> {

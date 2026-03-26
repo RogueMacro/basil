@@ -275,7 +275,10 @@ impl<'c> ScopedEmitter<'c> {
             Operation::Divide { a, b, dest } => self.emit_div(a, b, dest, idx),
 
             Operation::Compare { a, b, cond, dest } => self.emit_cmp(a, b, cond, dest, idx),
-            Operation::BranchIfFalse { cond, label } => self.emit_branch_if_false(cond, label, idx),
+
+            Operation::Branch { label } => self.emit_jump(label),
+            Operation::BranchIf { cond, label } => self.emit_branch_if(cond, label, idx),
+            Operation::BranchIfNot { cond, label } => self.emit_branch_if_not(cond, label, idx),
 
             Operation::Return { value } => self.emit_return(value, idx),
             Operation::Call {
@@ -490,12 +493,22 @@ impl<'c> ScopedEmitter<'c> {
         self.asm.emit_movz(0, dest);
     }
 
-    fn emit_branch_if_false(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
+    fn emit_branch_if(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
+        let cond = self.map_reg_use(cond, idx);
+
+        let instr_idx = self.asm.current_offset();
+        self.lazy_emit(label, move |offset| instr::BranchNotZero {
+            addr: i19::new((offset as i32 - instr_idx as i32) / 4),
+            reg: cond,
+        });
+    }
+
+    fn emit_branch_if_not(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
         let cond = self.map_reg_use(cond, idx);
 
         let instr_idx = self.asm.current_offset();
         self.lazy_emit(label, move |offset| instr::BranchZero {
-            addr: i19::new((offset - instr_idx) as i32 / 4),
+            addr: i19::new((offset as i32 - instr_idx as i32) / 4),
             reg: cond,
         });
     }

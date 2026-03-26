@@ -107,6 +107,9 @@ pub enum Keyword {
     Use,
     Extern,
     As,
+    While,
+    For,
+    In,
 }
 
 impl Keyword {
@@ -118,6 +121,9 @@ impl Keyword {
             "use" => Keyword::Use,
             "extern" => Keyword::Extern,
             "as" => Keyword::As,
+            "while" => Keyword::While,
+            "for" => Keyword::For,
+            "in" => Keyword::In,
             _ => return None,
         };
 

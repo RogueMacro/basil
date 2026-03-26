@@ -151,7 +151,14 @@ pub enum Operation {
         cond: Condition,
         dest: VirtualReg,
     },
-    BranchIfFalse {
+    Branch {
+        label: Label,
+    },
+    BranchIf {
+        cond: VirtualReg,
+        label: Label,
+    },
+    BranchIfNot {
         cond: VirtualReg,
         label: Label,
     },
@@ -220,7 +227,7 @@ impl Operation {
                 push(Some(*b));
                 assigned = Some(*dest);
             }
-            Operation::BranchIfFalse { cond, label: _ } => {
+            Operation::BranchIfNot { cond, label: _ } | Operation::BranchIf { cond, label: _ } => {
                 push(Some(*cond));
             }
 
@@ -235,6 +242,7 @@ impl Operation {
                     push(Some(*vreg));
                 }
             }
+            Operation::Branch { label: _ } => {}
         }
 
         (used, assigned)
@@ -398,7 +406,13 @@ impl fmt::Display for IR {
                     Operation::Compare { a, b, cond, dest } => {
                         writeln!(f, "    {} = cmp {} {:?} {}", dest, a, cond, b)?
                     }
-                    Operation::BranchIfFalse { cond, label } => {
+                    Operation::Branch { label } => {
+                        writeln!(f, "    goto {}", label)?;
+                    }
+                    Operation::BranchIf { cond, label } => {
+                        writeln!(f, "    if {} goto {}", cond, label)?;
+                    }
+                    Operation::BranchIfNot { cond, label } => {
                         writeln!(f, "    if not {} goto {}", cond, label)?;
                     }
                     Operation::Return { value } => writeln!(f, "    ret {}", value)?,

@@ -77,6 +77,10 @@ pub enum Statement {
     },
     Return(Expression),
     Expr(Expression),
+    WhileLoop {
+        guard: Expression,
+        body: Vec<Statement>,
+    },
 }
 
 #[derive(Debug, Clone)]

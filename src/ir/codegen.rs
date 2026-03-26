@@ -98,11 +98,12 @@ impl<'ir> BlockBuilder<'ir> {
                     let value = self.unroll_expr(expr, None);
                     self.ops.push(Op::Return { value });
                 }
+
                 Statement::If { guard, body } => {
                     let cond = self.unroll_expr(guard, None);
                     let cond = self.src_to_vreg(cond);
                     let label = self.reserve_label();
-                    self.ops.push(Op::BranchIfFalse { cond, label });
+                    self.ops.push(Op::BranchIfNot { cond, label });
 
                     let outer_vregs = self.vregs.clone();
                     let outer_vreg_counter = self.vreg_counter;
@@ -125,6 +126,41 @@ impl<'ir> BlockBuilder<'ir> {
                     self.vregs = outer_vregs;
                     self.vreg_counter = outer_vreg_counter;
                 }
+
+                Statement::WhileLoop { guard, body } => {
+                    let cond_label = self.reserve_label();
+
+                    let outer_vregs = self.vregs.clone();
+                    let outer_vreg_counter = self.vreg_counter;
+
+                    self.ops.push(Op::Branch { label: cond_label });
+
+                    let body_label = self.insert_label();
+                    self.consume_block(body);
+
+                    self.set_label_here(cond_label);
+                    let cond = self.unroll_expr(guard, None);
+                    let cond = self.src_to_vreg(cond);
+                    self.ops.push(Op::BranchIf {
+                        cond,
+                        label: body_label,
+                    });
+
+                    for (name, inner) in self.vregs.iter() {
+                        if let Some(outer) = outer_vregs.get(name)
+                            && inner != outer
+                        {
+                            self.ops.push(Op::Assign {
+                                src: SourceVal::VReg(*inner),
+                                dest: *outer,
+                            });
+                        }
+                    }
+
+                    self.vregs = outer_vregs;
+                    self.vreg_counter = outer_vreg_counter;
+                }
+
                 Statement::Expr(expr) => {
                     self.unroll_expr(expr, None);
                 }
@@ -268,5 +304,11 @@ impl<'ir> BlockBuilder<'ir> {
 
     fn set_label_here(&mut self, label: Label) {
         self.labels.entry(self.ops.len()).or_default().push(label);
+    }
+
+    fn insert_label(&mut self) -> Label {
+        let label = self.reserve_label();
+        self.set_label_here(label);
+        label
     }
 }

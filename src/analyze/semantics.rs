@@ -203,7 +203,7 @@ impl Analyzer {
                         .report();
                 }
             }
-            Statement::If { guard, body } => {
+            Statement::If { guard, body } | Statement::WhileLoop { guard, body } => {
                 if let Some(typ) = self.expression(guard)
                     && typ != SemanticType::Bool
                 {
