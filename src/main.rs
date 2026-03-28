@@ -6,7 +6,7 @@ use std::{
 
 use clap::{Parser, Subcommand};
 use colored::Colorize;
-use istind::{
+use basil::{
     Compiler,
     synthesize::{arch::arm::ArmAssembler, exe::mac::AppleExecutable},
 };
@@ -80,7 +80,7 @@ fn build(file: &Path, asm: bool) -> Result<PathBuf, Error> {
 
     let compiler = Compiler::<AppleExecutable, ArmAssembler>::default();
 
-    let out_path = istind::files::target_mod(module)?;
+    let out_path = basil::files::target_mod(module)?;
 
     let start = Instant::now();
     if let Err(error_count) = compiler.compile(file, &out_path) {

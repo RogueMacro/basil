@@ -1,6 +1,6 @@
 use std::{fs, path::Path, rc::Rc};
 
-use istind::{
+use basil::{
     Compiler,
     synthesize::exe::{DummyExecutable, Executable, mac::AppleExecutable},
 };
@@ -25,7 +25,7 @@ fn runs(test_name: &str, expect_exit_code: i32, source: &str) {
 
     fs::create_dir_all("ctarget/test").unwrap();
 
-    let mut exe = AppleExecutable::default().with_binary_identifier("istind.test");
+    let mut exe = AppleExecutable::default().with_binary_identifier("basil.test");
     exe.build(code, Path::new("ctarget/test").join(test_name));
     let status = exe.run().unwrap();
 

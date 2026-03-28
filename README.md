@@ -1,10 +1,10 @@
-# istind
+# basil
 
 A hobby compiler for a custom language, written in Rust.
 
 ## About
 
-istind is a personal project exploring compiler construction from scratch. It covers the full compilation pipeline:
+basil is a personal project exploring compiler construction from scratch. It covers the full compilation pipeline:
 
 - **Lexer** – tokenizes source text into a stream of tokens
 - **Parser / AST** – parses tokens into an abstract syntax tree
