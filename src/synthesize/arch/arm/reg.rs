@@ -214,7 +214,7 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     let mut unused_regs = CALLER_SAVED_REGS[args.len()..].to_vec();
 
     for (i, op) in bb.ops.iter().enumerate() {
-        if predecessor_counts.get(i).copied().unwrap_or_default() > 1 {
+        if predecessor_counts[i] > 1 {
             for entry in locations.values_mut() {
                 entry.reg = None;
             }
