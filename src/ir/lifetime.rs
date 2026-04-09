@@ -166,3 +166,48 @@ pub fn print_lifetimes(lifetimes: &HashMap<VirtualReg, Lifetime>) {
 
     println!();
 }
+
+impl super::BasicBlock {
+    /// Generates a registry mapping virtual registers to a lifetime.
+    pub fn lifetimes(&self) -> HashMap<VirtualReg, Lifetime> {
+        let mut lifetimes: HashMap<VirtualReg, Lifetime> = HashMap::new();
+        let mut active: Vec<(VirtualReg, Interval)> = Vec::new();
+        let mut uses = Vec::new();
+
+        for (i, op) in self.ops.iter().enumerate() {
+            uses.clear();
+            op._vregs_used(&mut uses);
+
+            active.retain_mut(|(vreg, interval)| {
+                if let Some(u) = uses.iter().position(|r| r == vreg) {
+                    uses.swap_remove(u);
+                    interval.range.end = i + 1;
+
+                    true
+                } else {
+                    let lifetime = lifetimes.entry(*vreg).or_default();
+                    lifetime.insert_interval(interval.clone());
+
+                    false
+                }
+            });
+
+            // existing uses removed in previous step
+            for vreg in &uses {
+                let interval = Interval {
+                    range: i..(i + 1),
+                    register: None,
+                };
+
+                active.push((*vreg, interval));
+            }
+        }
+
+        for (vreg, interval) in active {
+            let lifetime = lifetimes.entry(vreg).or_default();
+            lifetime.insert_interval(interval.clone());
+        }
+
+        lifetimes
+    }
+}

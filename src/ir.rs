@@ -1,12 +1,10 @@
+use itertools::Itertools;
 use std::{
     collections::{HashMap, HashSet},
     fmt,
 };
 
-use crate::{
-    analyze::ast::CompareOp,
-    ir::lifetime::{Interval, Lifetime},
-};
+use crate::analyze::ast::CompareOp;
 
 pub mod codegen;
 pub mod lifetime;
@@ -18,85 +16,66 @@ pub struct IR {
 }
 
 impl IR {
-    pub fn alloc_str(&mut self, string: String) -> StrId {
+    pub fn alloc_str_literal(&mut self, string: String) -> StrId {
         let len = self.strings.len();
         *self.strings.entry(string).or_insert(len)
     }
 }
 
 pub type StrId = usize;
+pub type OpIndex = usize;
 
 pub enum Item {
     Function {
         name: String,
         args: Vec<VirtualReg>,
-        bb: BasicBlock,
+        body: Vec<BasicBlock>,
     },
 }
 
-pub type OpIndex = usize;
+pub struct Body {
+    pub blocks: Vec<BasicBlock>,
+}
 
+/// A [basic block](BasicBlock) is a sequence of operations that does not affect control flow. Each basic block
+/// contains exactly one [terminator](Terminator), which specifies the next block in the control flow graph (CFG).
+/// In addition basic blocks can specify arguments, which allows it to use registers passed on from
+/// other basic blocks. This is an alternative to LLVMs phi nodes.
+///
+/// The next basic block is called the successor, and the previous is called the predecessor. A basic block
+/// can have multiple succesors and predecessors.
 pub struct BasicBlock {
-    pub labels: HashMap<OpIndex, Vec<Label>>,
+    pub label: Label,
+    pub args: Vec<VirtualReg>,
     pub ops: Vec<Operation>,
+    pub terminator: Terminator,
 }
 
 impl BasicBlock {
-    /// Generates a registry mapping virtual registers to a lifetime.
-    pub fn lifetimes(&self) -> HashMap<VirtualReg, Lifetime> {
-        let mut lifetimes: HashMap<VirtualReg, Lifetime> = HashMap::new();
-        let mut active: Vec<(VirtualReg, Interval)> = Vec::new();
-        let mut uses = Vec::new();
-
-        for (i, op) in self.ops.iter().enumerate() {
-            uses.clear();
-            op._vregs_used(&mut uses);
-
-            active.retain_mut(|(vreg, interval)| {
-                if let Some(u) = uses.iter().position(|r| r == vreg) {
-                    uses.swap_remove(u);
-                    interval.range.end = i + 1;
-
-                    true
-                } else {
-                    let lifetime = lifetimes.entry(*vreg).or_default();
-                    lifetime.insert_interval(interval.clone());
-
-                    false
-                }
-            });
-
-            // existing uses removed in previous step
-            for vreg in &uses {
-                let interval = Interval {
-                    range: i..(i + 1),
-                    register: None,
-                };
-
-                active.push((*vreg, interval));
-            }
+    pub fn successors(&self) -> Vec<Label> {
+        match self.terminator {
+            Terminator::Branch { label } => vec![label],
+            Terminator::BranchCond {
+                if_true, if_false, ..
+            } => vec![if_true, if_false],
+            Terminator::Return { .. } => vec![Label::Ret],
         }
-
-        for (vreg, interval) in active {
-            let lifetime = lifetimes.entry(vreg).or_default();
-            lifetime.insert_interval(interval.clone());
-        }
-
-        lifetimes
     }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum Label {
-    N(u32),
-    FnRet,
+    Entry,
+    Anon(u32),
+    Ret,
 }
 
 impl fmt::Display for Label {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
-            Self::N(n) => write!(f, ".L{}", n),
-            Self::FnRet => write!(f, ".end"),
+            Self::Entry => write!(f, ".entry"),
+            Self::Anon(n) => write!(f, ".L{}", n),
+            Self::Ret => write!(f, ".end"),
         }
     }
 }
@@ -110,6 +89,21 @@ pub enum VarSize {
     B16,
     B32,
     B64,
+}
+
+#[derive(Debug, Clone)]
+pub enum Terminator {
+    Branch {
+        label: Label,
+    },
+    BranchCond {
+        cond: VirtualReg,
+        if_true: Label,
+        if_false: Label,
+    },
+    Return {
+        value: SourceVal,
+    },
 }
 
 #[derive(Debug, Clone)]
@@ -157,20 +151,6 @@ pub enum Operation {
         cond: Condition,
         dest: VirtualReg,
     },
-    Branch {
-        label: Label,
-    },
-    BranchIf {
-        cond: VirtualReg,
-        label: Label,
-    },
-    BranchIfNot {
-        cond: VirtualReg,
-        label: Label,
-    },
-    Return {
-        value: SourceVal,
-    },
     Call {
         function: String,
         args: Vec<VirtualReg>,
@@ -209,12 +189,10 @@ impl Operation {
                 push(Some(*ptr));
             }
 
-            Operation::Add { a, b, dest } | Operation::Subtract { a, b, dest } => {
-                push(Some(*a));
-                push(Some(*b));
-                assigned = Some(*dest);
-            }
-            Operation::Multiply { a, b, dest } | Operation::Divide { a, b, dest } => {
+            Operation::Add { a, b, dest }
+            | Operation::Subtract { a, b, dest }
+            | Operation::Multiply { a, b, dest }
+            | Operation::Divide { a, b, dest } => {
                 push(Some(*a));
                 push(Some(*b));
                 assigned = Some(*dest);
@@ -230,11 +208,7 @@ impl Operation {
                 push(Some(*b));
                 assigned = Some(*dest);
             }
-            Operation::BranchIfNot { cond, label: _ } | Operation::BranchIf { cond, label: _ } => {
-                push(Some(*cond));
-            }
 
-            Operation::Return { value } => push(value.reg()),
             Operation::Call {
                 dest,
                 args,
@@ -245,7 +219,6 @@ impl Operation {
                     push(Some(*vreg));
                 }
             }
-            Operation::Branch { label: _ } => {}
         }
 
         (used, assigned)
@@ -361,7 +334,7 @@ impl fmt::Display for IR {
         }
 
         for item in self.items.iter() {
-            let Item::Function { name, args, bb } = item;
+            let Item::Function { name, args, body } = item;
             write!(f, "fn {}(", name)?;
             for reg in args.iter().take(1) {
                 write!(f, "{}", reg)?;
@@ -373,71 +346,93 @@ impl fmt::Display for IR {
 
             writeln!(f, ") {{")?;
 
-            for (i, op) in bb.ops.iter().enumerate() {
-                if let Some(labels) = bb.labels.get(&i) {
-                    for label in labels {
-                        write!(f, "{}", label)?;
-                    }
-                    writeln!(f)?;
-                }
-
-                match op {
-                    Operation::Assign { src, dest } => writeln!(f, "    {} = {}", dest, src)?,
-                    Operation::AddressOf { val, dest } => {
-                        writeln!(f, "    {} = ref {}", dest, val)?
-                    }
-                    Operation::LoadPointer { ptr, size, dest } => {
-                        writeln!(f, "    {} = deref {:?} {}", dest, size, ptr)?
-                    }
-                    Operation::StorePointer { src, ptr } => {
-                        writeln!(f, "    deref {} = {}", ptr, src)?
-                    }
-
-                    Operation::Add { a, b, dest } => writeln!(f, "    {} = {} + {}", dest, a, b)?,
-                    Operation::Subtract { a, b, dest } => {
-                        writeln!(f, "    {} = {} - {}", dest, a, b)?
-                    }
-                    Operation::Multiply { a, b, dest } => {
-                        writeln!(f, "    {} = {} * {}", dest, a, b)?
-                    }
-                    Operation::Divide { a, b, dest } => {
-                        writeln!(f, "    {} = {} / {}", dest, a, b)?
-                    }
-                    Operation::Compare { a, b, cond, dest } => {
-                        writeln!(f, "    {} = cmp {} {:?} {}", dest, a, cond, b)?
-                    }
-                    Operation::Branch { label } => {
-                        writeln!(f, "    goto {}", label)?;
-                    }
-                    Operation::BranchIf { cond, label } => {
-                        writeln!(f, "    if {} goto {}", cond, label)?;
-                    }
-                    Operation::BranchIfNot { cond, label } => {
-                        writeln!(f, "    if not {} goto {}", cond, label)?;
-                    }
-                    Operation::Return { value } => writeln!(f, "    ret {}", value)?,
-                    Operation::Call {
-                        function,
-                        args,
-                        dest,
-                    } => {
-                        if let Some(dest) = dest {
-                            write!(f, "    {} = call {}(", dest, function)?
+            for block in body {
+                let predecessors: Vec<_> = body
+                    .iter()
+                    .filter_map(|bb| {
+                        if bb.successors().contains(&block.label) {
+                            Some(bb.label)
                         } else {
-                            write!(f, "    call {}(", function)?
+                            None
+                        }
+                    })
+                    .collect();
+
+                writeln!(
+                    f,
+                    "{} ({})  # {}",
+                    block.label,
+                    block.args.iter().join(", "),
+                    predecessors.iter().join(", ")
+                )?;
+
+                for op in block.ops.iter() {
+                    match op {
+                        Operation::Assign { src, dest } => writeln!(f, "    {} = {}", dest, src)?,
+                        Operation::AddressOf { val, dest } => {
+                            writeln!(f, "    {} = ref {}", dest, val)?
+                        }
+                        Operation::LoadPointer { ptr, size, dest } => {
+                            writeln!(f, "    {} = deref {:?} {}", dest, size, ptr)?
+                        }
+                        Operation::StorePointer { src, ptr } => {
+                            writeln!(f, "    deref {} = {}", ptr, src)?
                         }
 
-                        for arg in args.iter().take(1) {
-                            write!(f, "{}", arg)?;
+                        Operation::Add { a, b, dest } => {
+                            writeln!(f, "    {} = {} + {}", dest, a, b)?
                         }
-
-                        for arg in args.iter().skip(1) {
-                            write!(f, ", {}", arg)?;
+                        Operation::Subtract { a, b, dest } => {
+                            writeln!(f, "    {} = {} - {}", dest, a, b)?
                         }
+                        Operation::Multiply { a, b, dest } => {
+                            writeln!(f, "    {} = {} * {}", dest, a, b)?
+                        }
+                        Operation::Divide { a, b, dest } => {
+                            writeln!(f, "    {} = {} / {}", dest, a, b)?
+                        }
+                        Operation::Compare { a, b, cond, dest } => {
+                            writeln!(f, "    {} = cmp {} {:?} {}", dest, a, cond, b)?
+                        }
+                        Operation::Call {
+                            function,
+                            args,
+                            dest,
+                        } => {
+                            if let Some(dest) = dest {
+                                write!(f, "    {} = call {}(", dest, function)?
+                            } else {
+                                write!(f, "    call {}(", function)?
+                            }
 
-                        writeln!(f, ")")?
+                            for arg in args.iter().take(1) {
+                                write!(f, "{}", arg)?;
+                            }
+
+                            for arg in args.iter().skip(1) {
+                                write!(f, ", {}", arg)?;
+                            }
+
+                            writeln!(f, ")")?
+                        }
                     }
                 }
+
+                match block.terminator {
+                    Terminator::Branch { label } => writeln!(f, "    goto {}", label)?,
+                    Terminator::BranchCond {
+                        cond,
+                        if_true,
+                        if_false,
+                    } => writeln!(
+                        f,
+                        "    br cond {} [\n      true => {}\n      false => {}\n    ]",
+                        cond, if_true, if_false
+                    )?,
+                    Terminator::Return { value } => writeln!(f, "    ret {}", value)?,
+                }
+
+                writeln!(f)?;
             }
 
             writeln!(f, "}}\n")?;

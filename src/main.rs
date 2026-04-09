@@ -4,12 +4,12 @@ use std::{
     time::Instant,
 };
 
-use clap::{Parser, Subcommand};
-use colored::Colorize;
 use basil::{
     Compiler,
     synthesize::{arch::arm::ArmAssembler, exe::mac::AppleExecutable},
 };
+use clap::{Parser, Subcommand};
+use colored::Colorize;
 
 #[derive(Parser)]
 #[command(version)]

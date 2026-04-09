@@ -111,10 +111,11 @@ impl ArmAssembler {
     }
 
     fn asm_item(&mut self, item: Item) {
-        let Item::Function { name, args, bb } = item;
+        let Item::Function { name, args, body } = item;
         self.functions.insert(name.clone(), self.current_offset());
 
-        let mut alloc = reg::allocate(&bb, &args);
+        todo!();
+        let mut alloc = reg::allocate(todo!(), &args);
 
         self.begin_stack(alloc.stack_size());
 
@@ -128,10 +129,10 @@ impl ArmAssembler {
             });
         }
 
-        let mut emitter = ScopedEmitter::new(self, alloc, bb.labels);
-        for (idx, op) in bb.ops.into_iter().enumerate() {
-            emitter.asm_op(op, idx);
-        }
+        let mut emitter = ScopedEmitter::new(self, alloc, todo!());
+        // for (idx, op) in bb.ops.into_iter().enumerate() {
+        //     emitter.asm_op(op, idx);
+        // }
 
         emitter.end();
 
@@ -286,11 +287,11 @@ impl<'c> ScopedEmitter<'c> {
 
             Operation::Compare { a, b, cond, dest } => self.emit_cmp(a, b, cond, dest, idx),
 
-            Operation::Branch { label } => self.emit_jump(label),
-            Operation::BranchIf { cond, label } => self.emit_branch_if(cond, label, idx),
-            Operation::BranchIfNot { cond, label } => self.emit_branch_if_not(cond, label, idx),
-
-            Operation::Return { value } => self.emit_return(value, idx),
+            // Operation::Branch { label } => self.emit_jump(label),
+            // Operation::BranchIf { cond, label } => self.emit_branch_if(cond, label, idx),
+            // Operation::BranchIfNot { cond, label } => self.emit_branch_if_not(cond, label, idx),
+            //
+            // Operation::Return { value } => self.emit_return(value, idx),
             Operation::Call {
                 function,
                 args,
@@ -550,7 +551,7 @@ impl<'c> ScopedEmitter<'c> {
             SourceVal::String(str_id) => todo!(),
         }
 
-        self.emit_jump(Label::FnRet);
+        self.emit_jump(Label::Ret);
     }
 
     fn lazy_emit<F, I>(&mut self, label: Label, emit: F)
@@ -569,7 +570,7 @@ impl<'c> ScopedEmitter<'c> {
 
     pub fn end(mut self) {
         self.mapped_labels
-            .insert(Label::FnRet, self.asm.current_offset());
+            .insert(Label::Ret, self.asm.current_offset());
         for lazy_emit in std::mem::take(&mut self.lazy_emits) {
             lazy_emit(&mut self);
         }

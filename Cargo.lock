@@ -847,6 +847,7 @@ dependencies = [
  "clap",
  "colored",
  "derive_more",
+ "itertools 0.14.0",
  "num-derive",
  "num-traits",
  "strum",
@@ -2339,6 +2340,15 @@ dependencies = [
 ]
 
 [[package]]
+name = "itertools"
+version = "0.14.0"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "2b192c782037fadd9cfa75548310488aabdbf3d2da73885b31bd0abd03351285"
+dependencies = [
+ "either",
+]
+
+[[package]]
 name = "itoa"
 version = "1.0.17"
 source = "registry+https://github.com/rust-lang/crates.io-index"
@@ -3113,7 +3123,7 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "96b0d374c7e4e985e6bc97ca7e7ad1d9642a8415db2017777d6e383002edaab2"
 dependencies = [
  "either",
- "itertools",
+ "itertools 0.13.0",
  "proc-macro2",
  "quote",
  "rayon",

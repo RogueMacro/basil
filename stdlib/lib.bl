@@ -45,3 +45,15 @@ fn write(fd: i64, buf: &char, count: i64) -> i64;
 fn exit(status: i64);
 
 fn _mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64);
+
+fn fizzbuzz(n: i64) {
+    i := 0;
+    while i < n {
+        std::printnumln("i: ", n);
+        if std::mod(i, 3) == 0 {
+            std::print("fizz\n");
+        }
+
+        i = i + 1;
+    }
+}
