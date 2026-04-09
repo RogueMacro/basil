@@ -167,6 +167,7 @@ struct AllocEntry {
 
 pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     assert!(args.len() <= 8, "only 8 arguments supported");
+    let predecessor_counts = predecessor_counts(bb);
 
     let mut regmap: RegMap = args
         .iter()
@@ -213,6 +214,15 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     let mut unused_regs = CALLER_SAVED_REGS[args.len()..].to_vec();
 
     for (i, op) in bb.ops.iter().enumerate() {
+        if predecessor_counts[i] > 1 {
+            for entry in locations.values_mut() {
+                entry.reg = None;
+            }
+            clean_regs.clear();
+            dirty_regs.clear();
+            unused_regs = CALLER_SAVED_REGS.to_vec();
+        }
+
         let (uses, assigned) = op.vregs_used();
 
         for &vreg in uses.iter() {
@@ -323,6 +333,38 @@ pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
     };
     // a.print_debug();
     a
+}
+
+fn predecessor_counts(bb: &BasicBlock) -> Vec<usize> {
+    let mut counts = vec![0; bb.ops.len()];
+    let mut label_to_index = HashMap::new();
+
+    for (idx, labels) in &bb.labels {
+        for label in labels {
+            label_to_index.insert(*label, *idx);
+        }
+    }
+
+    for (i, op) in bb.ops.iter().enumerate() {
+        if i + 1 < bb.ops.len() && !matches!(op, Operation::Branch { .. } | Operation::Return { .. }) {
+            counts[i + 1] += 1;
+        }
+
+        let target = match op {
+            Operation::Branch { label }
+            | Operation::BranchIf { label, .. }
+            | Operation::BranchIfNot { label, .. } => Some(label),
+            _ => None,
+        };
+
+        if let Some(label) = target
+            && let Some(&target_idx) = label_to_index.get(label)
+        {
+            counts[target_idx] += 1;
+        }
+    }
+
+    counts
 }
 
 /// Allocates physical registers for each virtual register at any given instruction.
@@ -579,9 +621,50 @@ impl Allocator {
     }
 }
 
-// #[cfg(test)]
+#[cfg(test)]
+mod tests {
+    use std::collections::HashMap;
+
+    use ux::u12;
+
+    use super::*;
+    use crate::ir::{BasicBlock, Label, Operation, SourceVal, VirtualReg};
+
+    fn make_bb(ops: Vec<Operation>, labels: HashMap<usize, Vec<Label>>) -> BasicBlock {
+        BasicBlock { ops, labels }
+    }
+
+    #[test]
+    fn allocate_loads_from_stack_at_multi_predecessor_join() {
+        let loop_cond = Label::N(0);
+        let mut labels = HashMap::new();
+        labels.insert(3, vec![loop_cond]);
+
+        let bb = make_bb(
+            vec![
+                Operation::Assign {
+                    src: SourceVal::Immediate(1),
+                    dest: VirtualReg(0),
+                },
+                Operation::Branch { label: loop_cond },
+                Operation::Assign {
+                    src: SourceVal::Immediate(2),
+                    dest: VirtualReg(0),
+                },
+                Operation::Return {
+                    value: SourceVal::VReg(VirtualReg(0)),
+                },
+            ],
+            labels,
+        );
+
+        let mut alloc = allocate(&bb, &[]);
+        let guard = alloc.map(VirtualReg(0), 3);
+        assert!(matches!(guard, RegisterGuard::Load { .. }));
+        assert_eq!(alloc.stack_size(), u12::new(2));
+    }
+}
 // mod tests {
-//     use ux::u12;
 //
 //     use super::*;
 //     use crate::ir::{BasicBlock, Operation, SourceVal, VirtualReg};
