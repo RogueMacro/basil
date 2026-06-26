@@ -1,6 +1,6 @@
 use std::{path::Path, process::ExitStatus};
 
-use crate::synthesize::arch::{Assembler, UnfinishedCode};
+use crate::synthesize::arch::{Assembler, LinkableCode};
 
 #[cfg(target_os = "macos")]
 pub mod mac;
@@ -8,7 +8,7 @@ pub mod mac;
 pub trait Executable: Default {
     fn with_binary_identifier(self, ident: impl AsRef<str>) -> Self;
 
-    fn build<A: Assembler>(&mut self, code: UnfinishedCode<A>, out_path: impl AsRef<Path>);
+    fn build<A: Assembler>(&mut self, code: LinkableCode<A>, out_path: impl AsRef<Path>);
 
     fn run(&self) -> Result<ExitStatus, ExecutableError>;
 }
@@ -21,7 +21,7 @@ impl Executable for DummyExecutable {
         self
     }
 
-    fn build<A: Assembler>(&mut self, _code: UnfinishedCode<A>, _out_path: impl AsRef<Path>) {}
+    fn build<A: Assembler>(&mut self, _code: LinkableCode<A>, _out_path: impl AsRef<Path>) {}
 
     fn run(&self) -> Result<ExitStatus, ExecutableError> {
         Err(ExecutableError::Dummy)

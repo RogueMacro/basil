@@ -13,7 +13,7 @@ use bytemuck::bytes_of;
 use mach_o::{Header, LoadCommand};
 
 use crate::synthesize::{
-    arch::{Assembler, MachineCode, UnfinishedCode},
+    arch::{Assembler, LinkableCode, MachineCode},
     exe::{
         ExecutableError,
         mac::mach_o::{NList, NListType, SectionFlags},
@@ -37,7 +37,7 @@ pub struct AppleExecutable {
 }
 
 impl Executable for AppleExecutable {
-    fn build<A: Assembler>(&mut self, code: UnfinishedCode<A>, out_path: impl AsRef<Path>) {
+    fn build<A: Assembler>(&mut self, code: LinkableCode<A>, out_path: impl AsRef<Path>) {
         // TODO: transform into readable code
 
         let out_path = out_path.as_ref();
@@ -84,7 +84,7 @@ impl Executable for AppleExecutable {
             + size_of::<SymTabCommand>();
 
         let code_size = code.size();
-        let code = code.finalize(text_data_offset + code_size);
+        let code = code.link(text_data_offset + code_size);
 
         let MachineCode {
             instructions,
@@ -313,7 +313,6 @@ impl Executable for AppleExecutable {
 
         let mut file = File::create(out_path).unwrap();
 
-        // file.write_all(&vec).unwrap();
         let signer = MachOSigner::new(&vec).unwrap();
         let mut sign_settings = SigningSettings::default();
         sign_settings.set_binary_identifier(
@@ -325,6 +324,8 @@ impl Executable for AppleExecutable {
         signer
             .write_signed_binary(&sign_settings, &mut file)
             .unwrap();
+
+        drop(file);
 
         std::fs::set_permissions(out_path, Permissions::from_mode(0o755)).unwrap();
 

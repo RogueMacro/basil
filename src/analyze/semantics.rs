@@ -27,7 +27,8 @@ struct Analyzer {
 
     variables: HashMap<String, SemanticType>,
     functions: HashMap<String, (Span, SemanticType, Vec<(Span, SemanticType)>)>,
-    called_funcs: HashSet<String>,
+    function_calls: HashMap<String, HashSet<String>>,
+    fn_call_context: HashSet<String>,
 }
 
 impl Analyzer {
@@ -36,7 +37,8 @@ impl Analyzer {
             err_ctx: ErrorContext::new(),
             variables: HashMap::new(),
             functions: HashMap::new(),
-            called_funcs: HashSet::from([String::from(MAIN_FN)]),
+            function_calls: HashMap::new(),
+            fn_call_context: HashSet::new(),
         }
     }
 
@@ -79,8 +81,25 @@ impl Analyzer {
             self.item(item);
         }
 
+        let mut used_functions: HashSet<String> = HashSet::new();
+        used_functions.insert(String::from("main"));
+        let mut queue: Vec<&str> = vec!["main"];
+
+        while let Some(&func) = queue.first() {
+            if let Some(iter) = self.function_calls.get(func) {
+                for callee in iter {
+                    if !used_functions.contains(callee) {
+                        used_functions.insert(callee.to_owned());
+                        queue.push(callee);
+                    }
+                }
+            }
+
+            queue.remove(0);
+        }
+
         ast.items.retain(|item| match item {
-            Item::Function { name, .. } => self.called_funcs.contains(name),
+            Item::Function { name, .. } => used_functions.contains(name),
             Item::ForwardDecl { .. } => false,
             Item::ExternLib(_) => false,
         });
@@ -131,6 +150,9 @@ impl Analyzer {
                         .with_label(decl_span.clone(), "main must return a value")
                         .report();
                 }
+
+                let calls = std::mem::take(&mut self.fn_call_context);
+                self.function_calls.insert(name.to_owned(), calls);
             }
             Item::ForwardDecl { .. } => {}
             Item::ExternLib(_lib) => (), // TODO: maybe?
@@ -400,20 +422,20 @@ impl Analyzer {
                         }
                     }
 
-                    if !self.called_funcs.contains(function) {
-                        self.called_funcs.insert(function.to_owned());
+                    if !self.fn_call_context.contains(function) {
+                        self.fn_call_context.insert(function.to_owned());
                     }
 
-                    return Some(ret_type.clone());
+                    Some(ret_type.clone())
                 } else {
                     self.err_ctx
                         .error(expr.span.clone())
                         .with_message("invalid function call")
                         .with_label(expr.span.clone(), format!("{} is not a function", function))
                         .report();
-                }
 
-                None
+                    None
+                }
             }
         }
     }

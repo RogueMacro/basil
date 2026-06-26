@@ -1,3 +1,5 @@
+#![feature(deref_patterns)]
+
 use std::{
     collections::HashMap,
     fs,
@@ -17,7 +19,7 @@ use crate::{
     },
     ir::IR,
     synthesize::{
-        arch::{Assembler, MachineCode, UnfinishedCode, arm::ArmAssembler},
+        arch::{Assembler, LinkableCode, MachineCode, arm::ArmAssembler},
         exe::Executable,
     },
 };
@@ -60,7 +62,7 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
         &self,
         name: Rc<PathBuf>,
         source: &str,
-    ) -> Result<UnfinishedCode<A>, ErrorVec> {
+    ) -> Result<LinkableCode<A>, ErrorVec> {
         let mut ast = load_ast(name.clone(), source)?;
 
         let mut libmap = HashMap::new();

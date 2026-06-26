@@ -1,3 +1,5 @@
+use crate::analyze::ast::ArithmeticOp;
+
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Keyword(Keyword),
@@ -96,6 +98,18 @@ impl Operator {
             Plus | Minus => 1,
             Star | Slash => 2,
         }
+    }
+
+    pub fn as_arithmetic(&self) -> Option<ArithmeticOp> {
+        let op = match self {
+            Operator::Plus => ArithmeticOp::Add,
+            Operator::Minus => ArithmeticOp::Sub,
+            Operator::Star => ArithmeticOp::Mul,
+            Operator::Slash => ArithmeticOp::Div,
+            _ => return None,
+        };
+
+        Some(op)
     }
 }
 

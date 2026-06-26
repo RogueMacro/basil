@@ -36,6 +36,7 @@ fn main() -> Result<(), Error> {
 
     if let Err(err) = cli(args) {
         eprintln!("{} {}", "error:".bright_red().bold(), err);
+        std::process::exit(1);
     }
 
     Ok(())

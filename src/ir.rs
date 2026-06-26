@@ -8,6 +8,7 @@ use crate::analyze::ast::CompareOp;
 
 pub mod codegen;
 pub mod lifetime;
+pub mod ssa;
 
 #[derive(Default)]
 pub struct IR {
@@ -16,7 +17,7 @@ pub struct IR {
 }
 
 impl IR {
-    pub fn alloc_str_literal(&mut self, string: String) -> StrId {
+    pub fn insert_str_literal(&mut self, string: String) -> StrId {
         let len = self.strings.len();
         *self.strings.entry(string).or_insert(len)
     }
@@ -25,29 +26,34 @@ impl IR {
 pub type StrId = usize;
 pub type OpIndex = usize;
 
+// #[derive(Debug, Clone, Copy)]
+// pub enum StackSlot {
+//     Local(u32),
+//     FnArg(u32),
+// }
+
 pub enum Item {
     Function {
         name: String,
         args: Vec<VirtualReg>,
+        stack: HashMap<VirtualReg, u32>,
+        stack_size: u32,
         body: Vec<BasicBlock>,
     },
 }
 
-pub struct Body {
-    pub blocks: Vec<BasicBlock>,
-}
-
-/// A [basic block](BasicBlock) is a sequence of operations that does not affect control flow. Each basic block
+/// A [basic block](BasicBlock) is a sequence of operations that do not affect control flow. Each basic block
 /// contains exactly one [terminator](Terminator), which specifies the next block in the control flow graph (CFG).
-/// In addition basic blocks can specify arguments, which allows it to use registers passed on from
+/// Additionally basic blocks can specify arguments, which allows it to use registers passed on from
 /// other basic blocks. This is an alternative to LLVMs phi nodes.
 ///
 /// The next basic block is called the successor, and the previous is called the predecessor. A basic block
 /// can have multiple succesors and predecessors.
 pub struct BasicBlock {
     pub label: Label,
-    pub args: Vec<VirtualReg>,
+    pub args: HashSet<VirtualReg>,
     pub ops: Vec<Operation>,
+    pub decls: Vec<VirtualReg>,
     pub terminator: Terminator,
 }
 
@@ -58,7 +64,7 @@ impl BasicBlock {
             Terminator::BranchCond {
                 if_true, if_false, ..
             } => vec![if_true, if_false],
-            Terminator::Return { .. } => vec![Label::Ret],
+            Terminator::Return { .. } => vec![Label::End],
         }
     }
 }
@@ -67,7 +73,7 @@ impl BasicBlock {
 pub enum Label {
     Entry,
     Anon(u32),
-    Ret,
+    End,
 }
 
 impl fmt::Display for Label {
@@ -75,7 +81,7 @@ impl fmt::Display for Label {
         match self {
             Self::Entry => write!(f, ".entry"),
             Self::Anon(n) => write!(f, ".L{}", n),
-            Self::Ret => write!(f, ".end"),
+            Self::End => write!(f, ".end"),
         }
     }
 }
@@ -102,8 +108,18 @@ pub enum Terminator {
         if_false: Label,
     },
     Return {
-        value: SourceVal,
+        value: VirtualReg,
     },
+}
+
+impl Terminator {
+    pub fn vreg_used(&self) -> Option<VirtualReg> {
+        match self {
+            Terminator::Branch { .. } => None,
+            Terminator::BranchCond { cond, .. } => Some(*cond),
+            Terminator::Return { value } => Some(*value),
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -112,8 +128,24 @@ pub enum Operation {
         src: SourceVal,
         dest: VirtualReg,
     },
+    Store {
+        src: SourceVal,
+        stack_offset: u32,
+    },
+    Load {
+        stack_offset: u32,
+        dest: VirtualReg,
+    },
+    LoadArg {
+        offset: u32,
+        dest: VirtualReg,
+    },
     AddressOf {
         val: VirtualReg,
+        dest: VirtualReg,
+    },
+    AddressOfArg {
+        offset: u32,
         dest: VirtualReg,
     },
     LoadPointer {
@@ -177,7 +209,19 @@ impl Operation {
                 push(src.reg());
                 assigned = Some(*dest);
             }
+            Operation::Store { src, stack_offset } => {
+                push(src.reg());
+            }
+            Operation::Load { stack_offset, dest } => {
+                assigned = Some(*dest);
+            }
+            Operation::LoadArg { offset, dest } => {
+                assigned = Some(*dest);
+            }
             Operation::AddressOf { val: _, dest } => {
+                push(Some(*dest));
+            }
+            Operation::AddressOfArg { offset, dest } => {
                 push(Some(*dest));
             }
             Operation::LoadPointer { ptr, size: _, dest } => {
@@ -334,7 +378,13 @@ impl fmt::Display for IR {
         }
 
         for item in self.items.iter() {
-            let Item::Function { name, args, body } = item;
+            let Item::Function {
+                name,
+                args,
+                stack,
+                stack_size: _,
+                body,
+            } = item;
             write!(f, "fn {}(", name)?;
             for reg in args.iter().take(1) {
                 write!(f, "{}", reg)?;
@@ -344,7 +394,7 @@ impl fmt::Display for IR {
                 write!(f, ", {}", reg)?;
             }
 
-            writeln!(f, ") {{")?;
+            writeln!(f, ") stack: {:?} {{", stack)?;
 
             for block in body {
                 let predecessors: Vec<_> = body
@@ -366,11 +416,31 @@ impl fmt::Display for IR {
                     predecessors.iter().join(", ")
                 )?;
 
+                // let find_var = |offset: u32| -> &str {
+                //     stack
+                //         .iter()
+                //         .find(|(_, off)| **off == offset)
+                //         .map(|(var, _)| var)
+                //         .unwrap()
+                // };
+
                 for op in block.ops.iter() {
                     match op {
                         Operation::Assign { src, dest } => writeln!(f, "    {} = {}", dest, src)?,
+                        Operation::Store { src, stack_offset } => {
+                            writeln!(f, "    store {} => offset {}", src, stack_offset)?
+                        }
+                        Operation::Load { stack_offset, dest } => {
+                            writeln!(f, "    {} = load offset {}", dest, stack_offset)?
+                        }
+                        Operation::LoadArg { offset, dest } => {
+                            writeln!(f, "    load arg fp + {} => {}", offset, dest)?
+                        }
                         Operation::AddressOf { val, dest } => {
                             writeln!(f, "    {} = ref {}", dest, val)?
+                        }
+                        Operation::AddressOfArg { offset, dest } => {
+                            writeln!(f, "    {} = ref fp + {}", dest, offset)?
                         }
                         Operation::LoadPointer { ptr, size, dest } => {
                             writeln!(f, "    {} = deref {:?} {}", dest, size, ptr)?

@@ -1,16 +1,22 @@
+use std::assert_matches;
 use std::collections::HashMap;
 
-use num_traits::FromPrimitive;
-use strum::IntoEnumIterator;
-use ux::{i7, i12, i19, i21, i26, u9, u12};
+use ux::{i7, i12, i19, i26, u9, u12};
 
 use crate::{
-    ir::{Condition, IR, Item, Label, OpIndex, Operation, SourceVal, StrId, VarSize, VirtualReg},
+    ir::{
+        BasicBlock, Condition, IR, Item, Label, Op, SourceVal, StrId, Terminator, VarSize,
+        VirtualReg,
+    },
     synthesize::arch::{
-        Assembler, MachineCode, UnfinishedCode,
+        Assembler, LinkableCode, MachineCode,
         arm::{
-            instr::{ImmShift16, Instruction},
-            reg::{Allocator, Reg, Register},
+            builtin::SyscallType,
+            instr::{
+                AddImmVal, BranchOffset, EitherReg, FnOffset, ImmShift16, Inst, Instruction,
+                PageAddr,
+            },
+            reg::Register,
         },
     },
 };
@@ -34,545 +40,421 @@ pub struct ArmAssembler {
     str_literal_offsets: HashMap<StrId, usize>,
 
     lazy_emitters: Vec<Box<dyn Fn(&mut ArmAssembler, usize)>>,
+    instructions: Vec<Inst<Register>>,
+    // bb_args: Vec<(usize, Vec<VirtualReg>)>,
+    empty_label_map: HashMap<Label, i32>,
 }
 
 impl Assembler for ArmAssembler {
-    fn assemble(ir: IR) -> UnfinishedCode<Self> {
-        let mut asm = ArmAssembler::default();
+    fn assemble(ir: IR) -> LinkableCode<Self> {
+        let mut assembler = ArmAssembler::default();
 
         let mut str_offset = 0;
         for (string, id) in ir.strings {
-            asm.str_literal_offsets.insert(id, str_offset);
-            str_offset += string.len() + 1; // c-string
-            asm.code.str_literals.push(string);
+            assembler.str_literal_offsets.insert(id, str_offset);
+            str_offset += string.len() + 1; // with zero-byte
+            assembler.code.str_literals.push(string);
         }
 
         for item in ir.items {
-            asm.asm_item(item);
+            let Item::Function {
+                name,
+                args,
+                stack,
+                stack_size,
+                body,
+            } = item;
+
+            println!("\nassemble fn {}", name);
+
+            let offset = assembler.instructions.len() as u64;
+            assembler.code.symbols.push((name.clone(), offset * 4));
+            assembler.functions.insert(name, offset as usize);
+
+            ProcedureGen::assemble(&mut assembler, stack, stack_size, body);
         }
 
-        builtin::assemble(&mut asm);
+        println!("-- BUILTIN --");
+        builtin::assemble(&mut assembler);
 
-        let entry_point_offset = asm.current_offset();
-        let mut emitter = ScopedEmitter::new(&mut asm, Allocator::default(), HashMap::new());
-        emitter.emit_call(MAIN_FN.to_owned(), vec![], None, 0);
+        println!("functions: {:?}", assembler.functions);
 
-        builtin::exit(&mut asm);
-
-        for (function, call_offset) in std::mem::take(&mut asm.fn_calls) {
-            let fn_offset = asm
-                .functions
-                .get(&function)
-                .unwrap_or_else(|| panic!("call to unknown function {}", function));
-
-            let rel_offset = (*fn_offset as i32 - call_offset as i32) / 4;
-            asm.emit_at(
-                call_offset,
-                instr::BranchLink {
-                    addr: i26::new(rel_offset),
-                },
-            );
-        }
-
-        asm.code.symbols = asm
-            .functions
-            .iter()
-            .map(|(name, &offset)| (name.clone(), offset as u64))
-            .collect();
-
-        asm.code
+        let entry_offset = (assembler.instructions.len() * 4) as u64;
+        assembler
+            .code
             .symbols
-            .push((String::from("_entry_point"), entry_point_offset as u64));
+            .push((String::from("_entry_point"), entry_offset));
+        assembler.code.entry_point_offset = entry_offset;
 
-        UnfinishedCode(asm)
+        assembler.emit_many([
+            Inst::BranchLink {
+                offset: FnOffset::Fixed(
+                    *assembler.functions.get(MAIN_FN).unwrap() as i32 - (entry_offset / 4) as i32,
+                ),
+            },
+            Inst::Movz {
+                shift: ImmShift16::L0,
+                value: SyscallType::Exit as u16,
+                dest: Register::X16,
+            },
+            Inst::Syscall,
+        ]);
+
+        LinkableCode(assembler)
     }
 
-    fn current_offset(&self) -> usize {
-        self.code.instructions.len()
+    fn code_size(&self) -> usize {
+        self.instructions.len() * 4
     }
 
-    fn into_machine_code(mut self, str_literal_offset: usize) -> MachineCode {
-        for emit in std::mem::take(&mut self.lazy_emitters) {
-            emit(&mut self, str_literal_offset);
-        }
+    fn into_machine_code(mut self, str_table_offset: usize) -> MachineCode {
+        println!("final code size: {} instructions", self.instructions.len());
+
+        self.code
+            .instructions
+            .extend(
+                self.instructions
+                    .into_iter()
+                    .enumerate()
+                    .flat_map(|(i, mut inst)| {
+                        inst.link(i as i32, &self.functions, str_table_offset);
+                        inst.encode().to_le_bytes()
+                    }),
+            );
 
         self.code
     }
 }
 
 impl ArmAssembler {
-    fn emit(&mut self, instr: impl Instruction) {
-        self.code.instructions.extend(instr.encode().to_le_bytes());
+    pub fn emit(&mut self, inst: Inst<Register>) {
+        println!("emit: {:?}", inst);
+        self.instructions.push(inst);
     }
 
-    fn emit_at(&mut self, offset: usize, instr: impl Instruction) {
-        let bytes = instr.encode().to_le_bytes();
-        self.code.instructions[offset..(offset + 4)].copy_from_slice(&bytes);
-    }
-
-    fn asm_item(&mut self, item: Item) {
-        let Item::Function { name, args, body } = item;
-        self.functions.insert(name.clone(), self.current_offset());
-
-        todo!();
-        let mut alloc = reg::allocate(todo!(), &args);
-
-        self.begin_stack(alloc.stack_size());
-
-        for &vreg in args.iter() {
-            let register = alloc.map(vreg, 0).inner_reg();
-            let offset = alloc.stack_index_of(&vreg);
-            self.emit(instr::Store {
-                base: Reg::SP,
-                offset: instr::Input::Imm(offset),
-                register,
-            });
+    pub fn emit_many(&mut self, insts: impl IntoIterator<Item = Inst<Register>>) {
+        let insts: Vec<Inst<Register>> = insts.into_iter().collect();
+        for inst in insts.iter() {
+            println!("emit: {:?}", inst);
         }
 
-        let mut emitter = ScopedEmitter::new(self, alloc, todo!());
-        // for (idx, op) in bb.ops.into_iter().enumerate() {
-        //     emitter.asm_op(op, idx);
-        // }
-
-        emitter.end();
-
-        self.end_stack();
-    }
-
-    fn begin_stack(&mut self, stack_size: u12) {
-        self.emit(instr::StorePair {
-            base: Reg::SP,
-            first: Reg::FP,
-            second: Reg::LR,
-            offset: i7::new(-2),
-        });
-
-        self.emit(instr::MovReg {
-            src: Reg::SP,
-            dest: Reg::FP,
-        });
-
-        if stack_size != u12::new(0) {
-            let mut stack_size: u16 = stack_size.into();
-            // align to 16 bytes
-            if !stack_size.is_multiple_of(2) {
-                stack_size += 1;
-            }
-
-            let stack_size = stack_size as i16;
-            let stack_size = i12::new(stack_size * 8);
-
-            self.stacks.push(stack_size);
-
-            self.emit(instr::Sub {
-                a: Reg::SP,
-                b: instr::Input::Imm(stack_size),
-                dest: Reg::SP,
-            });
-        }
-    }
-
-    fn end_stack(&mut self) {
-        if let Some(stack_size) = self.stacks.pop()
-            && stack_size != i12::new(0)
-        {
-            self.emit(instr::Add {
-                a: Reg::SP,
-                b: instr::Input::Imm(stack_size),
-                dest: Reg::SP,
-            });
-        }
-
-        self.emit(instr::LoadPair {
-            base: Reg::SP,
-            first: Reg::FP,
-            second: Reg::LR,
-            offset: i7::new(2),
-        });
-
-        self.emit(instr::Ret);
-    }
-
-    fn emit_stack_store(&mut self, offset: u12, register: Register) {
-        self.emit(instr::Store {
-            base: Reg::SP,
-            offset: instr::Input::Imm(offset),
-            register,
-        });
-    }
-
-    fn emit_movz(&mut self, n: i64, dest: Register) {
-        self.emit(instr::Movz {
-            shift: ImmShift16::L0,
-            imm_value: n as u16,
-            dest,
-        });
-    }
-
-    fn emit_nop(&mut self) {
-        self.emit(instr::Nop);
-    }
-
-    fn lazy_emit<F, I>(&mut self, emit: F)
-    where
-        F: Fn(usize) -> I + 'static,
-        I: Instruction,
-    {
-        let instr_offset = self.current_offset();
-        self.lazy_emitters.push(Box::new(move |asm, str_offset| {
-            let instr = emit(str_offset);
-            asm.emit_at(instr_offset, instr);
-        }));
-
-        self.emit_nop();
+        self.instructions.extend(insts);
     }
 }
 
-struct ScopedEmitter<'c> {
-    asm: &'c mut ArmAssembler,
-    alloc: Allocator,
-    ir_labels: HashMap<OpIndex, Vec<Label>>,
-    mapped_labels: HashMap<Label, InstrIndex>,
-    lazy_emits: Vec<Box<dyn FnOnce(&mut ScopedEmitter)>>,
+#[derive(Debug, Clone, Copy)]
+pub enum InstMarker {
+    None,
+    FirstInBB(Label),
+    // Terminator(Label, Terminator),
 }
 
-impl<'c> ScopedEmitter<'c> {
-    pub fn new(
-        asm: &'c mut ArmAssembler,
-        alloc: Allocator,
-        ir_labels: HashMap<OpIndex, Vec<Label>>,
-    ) -> Self {
-        Self {
-            asm,
-            alloc,
-            ir_labels,
-            mapped_labels: HashMap::new(),
-            lazy_emits: Vec::new(),
-        }
-    }
+#[derive(Default)]
+struct ProcedureGen {
+    instructions: Vec<(Inst<VirtualReg>, InstMarker)>,
+}
 
-    fn map_reg_use(&mut self, vreg: VirtualReg, instr_index: usize) -> Register {
-        self.alloc.map(vreg, instr_index).unwrap(self.asm)
-    }
+impl ProcedureGen {
+    pub fn assemble(
+        assembler: &mut ArmAssembler,
+        stack: HashMap<VirtualReg, u32>,
+        stack_size: u32,
+        body: Vec<BasicBlock>,
+    ) {
+        let mut proc = ProcedureGen::default();
 
-    fn map_reg_assign(&mut self, dest: VirtualReg, idx: usize) -> (Register, u12) {
-        let reg = self.alloc.map(dest, idx).unwrap(self.asm);
-        let stack_idx = self.alloc.stack_index_of(&dest);
-        (reg, stack_idx)
-    }
+        for bb in body {
+            let lifetimes = bb.lifetimes();
+            crate::ir::lifetime::print_lifetimes(&lifetimes);
 
-    fn asm_op(&mut self, op: Operation, idx: OpIndex) {
-        if let Some(labels) = self.ir_labels.get(&idx) {
-            for label in labels {
-                self.mapped_labels.insert(*label, self.asm.current_offset());
-                println!(
-                    "inserted label {} at {} (op: {:?}",
-                    label,
-                    self.asm.current_offset() / 4,
-                    op
-                );
-            }
-        }
+            let first_op_index = proc.instructions.len();
+            for op in bb.ops {
+                match op {
+                    Op::Assign { src, dest } => {
+                        match src {
+                            SourceVal::Immediate(imm) => proc.emit(Inst::Movz {
+                                shift: instr::ImmShift16::L0,
+                                value: imm as u16,
+                                dest,
+                            }),
+                            SourceVal::VReg(src) => proc.emit(Inst::MovReg {
+                                src: EitherReg::Virt(src),
+                                dest: EitherReg::Virt(dest),
+                            }),
+                            SourceVal::String(str_id) => {
+                                let rel_str_offset =
+                                    *assembler.str_literal_offsets.get(&str_id).unwrap_or_else(
+                                        || panic!("no string found for str_id #{}", str_id),
+                                    );
 
-        match op {
-            Operation::Assign { src, dest } => self.emit_assign(src, dest, idx),
-            Operation::AddressOf { val, dest } => self.emit_addr_of(val, dest, idx),
-            Operation::LoadPointer { ptr, dest, size } => self.emit_load_ptr(ptr, dest, size, idx),
-            Operation::StorePointer { src, ptr } => self.emit_store_ptr(src, ptr, idx),
+                                // TODO: handle case where code is longer than one page, need to
+                                // link by pc-relative index
+                                proc.emit_many([
+                                    Inst::Adrp {
+                                        page_addr: PageAddr::String(rel_str_offset),
+                                        dest,
+                                    },
+                                    Inst::AddImm {
+                                        a: EitherReg::Virt(dest),
+                                        imm: AddImmVal::String(rel_str_offset),
+                                        dest: EitherReg::Virt(dest),
+                                    },
+                                ]);
+                            }
+                        }
+                    }
+                    Op::Store { src, stack_offset } => {
+                        let SourceVal::VReg(source) = src else {
+                            panic!()
+                        };
 
-            Operation::Add { a, b, dest } => self.emit_add(a, b, dest, idx),
-            Operation::Subtract { a, b, dest } => self.emit_sub(a, b, dest, idx),
-            Operation::Multiply { a, b, dest } => self.emit_mul(a, b, dest, idx),
-            Operation::Divide { a, b, dest } => self.emit_div(a, b, dest, idx),
+                        proc.emit(Inst::Store {
+                            source,
+                            base: EitherReg::Phys(Register::SP),
+                            offset: u12::new(stack_offset as u16 / 8),
+                        });
+                    }
+                    Op::Load { stack_offset, dest } => {
+                        println!("load {} => {}", stack_offset, dest);
+                        proc.emit(Inst::Load {
+                            base: EitherReg::Phys(Register::SP),
+                            offset: u12::new(stack_offset as u16 / 8),
+                            dest,
+                        });
+                    }
+                    Op::LoadArg { offset, dest } => {
+                        println!("Load arg: {} => {}", offset, dest);
+                        proc.emit(Inst::Load {
+                            base: EitherReg::Phys(Register::FP),
+                            offset: u12::new(2 + offset as u16),
+                            dest,
+                        });
+                    }
+                    Op::AddressOf { val, dest } => {
+                        let offset = *stack.get(&val).unwrap_or_else(|| {
+                            panic!("cannot take address of temporary virtual register {}", val)
+                        });
 
-            Operation::Compare { a, b, cond, dest } => self.emit_cmp(a, b, cond, dest, idx),
+                        proc.emit(Inst::AddImm {
+                            a: EitherReg::Phys(Register::SP),
+                            imm: AddImmVal::Fixed(i12::new(offset as i16)),
+                            dest: EitherReg::Virt(dest),
+                        });
+                    }
+                    Op::AddressOfArg { offset, dest } => proc.emit(Inst::AddImm {
+                        a: EitherReg::Phys(Register::FP),
+                        imm: AddImmVal::Fixed(i12::new(offset as i16)),
+                        dest: EitherReg::Virt(dest),
+                    }),
+                    Op::LoadPointer { ptr, size, dest } => match size {
+                        VarSize::B64 => proc.emit(Inst::Load {
+                            base: EitherReg::Virt(ptr),
+                            offset: u12::new(0),
+                            dest,
+                        }),
+                        VarSize::B8 => proc.emit(Inst::LoadByte {
+                            base: ptr,
+                            offset: u9::new(0),
+                            dest,
+                        }),
+                        _ => todo!(),
+                    },
+                    Op::StorePointer { src, ptr } => proc.emit(Inst::Store {
+                        source: src,
+                        base: EitherReg::Virt(ptr),
+                        offset: u12::new(0),
+                    }),
+                    Op::Add { a, b, dest } => proc.emit(Inst::Add { a, b, dest }),
+                    Op::Subtract { a, b, dest } => proc.emit(Inst::Sub { a, b, dest }),
+                    Op::Multiply { a, b, dest } => proc.emit(Inst::Mul { a, b, dest }),
+                    Op::Divide { a, b, dest } => proc.emit(Inst::Div {
+                        a,
+                        b,
+                        dest,
+                        signed: true,
+                    }),
+                    Op::Compare { a, b, cond, dest } => {
+                        proc.emit_many([
+                            Inst::Cmp { a, b },
+                            Inst::BranchCond {
+                                offset: BranchOffset::Fixed(3),
+                                cond,
+                            },
+                            Inst::Movz {
+                                shift: instr::ImmShift16::L0,
+                                value: 1,
+                                dest,
+                            },
+                            Inst::Branch {
+                                offset: BranchOffset::Fixed(2),
+                            },
+                            Inst::Movz {
+                                shift: instr::ImmShift16::L0,
+                                value: 0,
+                                dest,
+                            },
+                        ]);
+                    }
+                    Op::Call {
+                        function,
+                        args,
+                        dest,
+                    } => {
+                        // save regs
+                        // push args to stack
+                        // call fn
 
-            // Operation::Branch { label } => self.emit_jump(label),
-            // Operation::BranchIf { cond, label } => self.emit_branch_if(cond, label, idx),
-            // Operation::BranchIfNot { cond, label } => self.emit_branch_if_not(cond, label, idx),
-            //
-            // Operation::Return { value } => self.emit_return(value, idx),
-            Operation::Call {
-                function,
-                args,
-                dest,
-            } => self.emit_call(function, args, dest, idx),
-        }
-    }
+                        let arg_stack_size = ((8 * args.len() as u32 + 15) >> 4) << 4;
+                        let arg_stack_size_i12 = i12::new(arg_stack_size as i16);
 
-    fn emit_assign(&mut self, src: SourceVal, dest: VirtualReg, idx: usize) {
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
+                        proc.emit_many([
+                            Inst::BeginFnCall {
+                                reserved_stack_size: arg_stack_size,
+                            },
+                            Inst::SubImm {
+                                a: EitherReg::Phys(Register::SP),
+                                imm: arg_stack_size_i12,
+                                dest: EitherReg::Phys(Register::SP),
+                            },
+                        ]);
 
-        match src {
-            SourceVal::Immediate(n) => {
-                self.asm.emit_movz(n, dest);
-            }
-            SourceVal::VReg(vreg) => {
-                let src = self.map_reg_use(vreg, idx);
-                if src != dest {
-                    self.asm.emit(instr::MovReg { src, dest });
+                        for (i, arg) in args.iter().enumerate() {
+                            proc.emit(Inst::Store {
+                                source: *arg,
+                                base: EitherReg::Phys(Register::SP),
+                                offset: u12::new(i as u16),
+                            });
+                        }
+
+                        proc.emit(Inst::BranchLink {
+                            offset: FnOffset::Dynamic(function),
+                        });
+
+                        proc.emit_many([
+                            Inst::AddImm {
+                                a: EitherReg::Phys(Register::SP),
+                                imm: AddImmVal::Fixed(arg_stack_size_i12),
+                                dest: EitherReg::Phys(Register::SP),
+                            },
+                            Inst::EndFnCall,
+                        ]);
+
+                        if let Some(dest) = dest {
+                            proc.emit(Inst::MovReg {
+                                src: EitherReg::Phys(Register::X0),
+                                dest: EitherReg::Virt(dest),
+                            });
+                        }
+                    }
                 }
             }
-            SourceVal::String(str_id) => {
-                let rel_str_offset = *self
-                    .asm
-                    .str_literal_offsets
-                    .get(&str_id)
-                    .unwrap_or_else(|| panic!("no string found for str_id #{}", str_id));
 
-                let cur_offset = self.asm.current_offset();
-                // let rel_str_offset = rel_str_offset + 0x100000000;
+            match bb.terminator {
+                Terminator::Branch { label } => proc.emit(Inst::Branch {
+                    offset: BranchOffset::Dynamic(label),
+                }),
+                Terminator::BranchCond {
+                    cond,
+                    if_true,
+                    if_false,
+                } => proc.emit_many([
+                    Inst::BranchZero {
+                        offset: BranchOffset::Dynamic(if_false),
+                        reg: cond,
+                    },
+                    Inst::Branch {
+                        offset: BranchOffset::Dynamic(if_true),
+                    },
+                ]),
 
-                self.asm.lazy_emit(move |str_table_offset| {
-                    let abs_offset = str_table_offset + rel_str_offset;
-                    let page_addr = i21::new((abs_offset / 4096) as i32);
+                Terminator::Return { value } => proc.emit_many([
+                    Inst::MovReg {
+                        src: EitherReg::Virt(value),
+                        dest: EitherReg::Phys(Register::X0),
+                    },
+                    Inst::Branch {
+                        offset: BranchOffset::Dynamic(Label::End),
+                    },
+                ]),
+            }
 
-                    instr::Adrp { page_addr, dest }
-                });
+            proc.instructions[first_op_index].1 = InstMarker::FirstInBB(bb.label);
+        }
 
-                self.asm.lazy_emit(move |str_table_offset| {
-                    let abs_offset = str_table_offset + rel_str_offset;
-                    let in_page_offset = i12::new((abs_offset % 4096) as i16);
+        let (instructions, extra_stack_size) = reg::allocate(proc.instructions, stack_size as u16);
 
-                    instr::Add {
-                        a: dest,
-                        b: instr::Input::Imm(in_page_offset),
-                        dest,
-                    }
-                });
+        let mut label_map = HashMap::from_iter([(Label::End, instructions.len() as i32)]);
+        for (i, (_, marker)) in instructions.iter().enumerate() {
+            match marker {
+                InstMarker::FirstInBB(label) => {
+                    label_map.insert(*label, i as i32);
+                }
+                InstMarker::None => {}
             }
         }
 
-        self.asm.emit_stack_store(stack_ptr, dest);
-    }
+        // align to 16 bytes
+        let stack_size = ((stack_size as u16 + extra_stack_size + 15) >> 4) << 4;
 
-    fn emit_addr_of(&mut self, val: VirtualReg, dest: VirtualReg, idx: usize) {
-        let stack_idx = self.alloc.stack_index_of(&val);
-        let stack_idx: u16 = stack_idx.into();
-        let stack_idx = i12::new(stack_idx as i16 * 8);
+        assembler.emit_many([
+            Inst::StorePair {
+                base: Register::SP,
+                first: Register::FP,
+                second: Register::LR,
+                offset: i7::new(-2),
+            },
+            Inst::MovReg {
+                src: EitherReg::Phys(Register::SP),
+                dest: EitherReg::Phys(Register::FP),
+            },
+        ]);
 
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
-
-        self.asm.emit(instr::Add {
-            a: Register::SP,
-            b: instr::Input::Imm(stack_idx),
-            dest,
-        });
-
-        self.asm.emit_stack_store(stack_ptr, dest);
-    }
-
-    fn emit_load_ptr(&mut self, ptr: VirtualReg, dest: VirtualReg, size: VarSize, idx: usize) {
-        let ptr = self.map_reg_use(ptr, idx);
-        let (dest, store_stack_ptr) = self.map_reg_assign(dest, idx);
-
-        match size {
-            VarSize::Zero => (),
-            VarSize::B8 => self.asm.emit(instr::LoadByte {
-                base: ptr,
-                offset: u9::new(0),
-                dest,
-            }),
-            VarSize::B16 | VarSize::B32 => todo!(),
-            VarSize::B64 => self.asm.emit(instr::Load {
-                base: ptr,
-                offset: u12::new(0),
-                dest,
-            }),
+        if stack_size > 0 {
+            assembler.emit(Inst::SubImm {
+                a: EitherReg::Phys(Register::SP),
+                imm: i12::new(stack_size as i16),
+                dest: EitherReg::Phys(Register::SP),
+            });
         }
 
-        self.asm.emit_stack_store(store_stack_ptr, dest);
-    }
+        assembler
+            .instructions
+            .extend(
+                instructions
+                    .into_iter()
+                    .enumerate()
+                    .map(|(i, (mut inst, _))| {
+                        inst.fix_labels(i as i32, &label_map);
+                        inst
+                    }),
+            );
 
-    fn emit_store_ptr(&mut self, src: VirtualReg, ptr: VirtualReg, idx: usize) {
-        let ptr = self.map_reg_use(ptr, idx);
-        let src = self.map_reg_use(src, idx);
-
-        self.asm.emit(instr::Store {
-            base: ptr,
-            offset: instr::Input::Imm(u12::new(0)),
-            register: src,
-        });
-    }
-
-    fn emit_call(
-        &mut self,
-        function: String,
-        args: Vec<VirtualReg>,
-        dest: Option<VirtualReg>,
-        instr_index: usize,
-    ) {
-        if let Some(regs_to_save) = self.alloc.stack_save(instr_index) {
-            for (reg, offset) in regs_to_save {
-                self.asm.emit_stack_store(*offset, *reg);
-            }
+        if stack_size > 0 {
+            assembler.emit(Inst::AddImm {
+                a: EitherReg::Phys(Register::SP),
+                imm: AddImmVal::Fixed(i12::new(stack_size as i16)),
+                dest: EitherReg::Phys(Register::SP),
+            });
         }
-
-        if args.len() > 8 {
-            todo!();
-        }
-
-        for (i, &arg) in args.iter().enumerate() {
-            let src = self.map_reg_use(arg, instr_index);
-            let dest = Register::from_usize(i).unwrap();
-
-            if (src as u32) < (i as u32) {
-                // source register has been overwritten
-                self.asm.emit(instr::Load {
-                    base: Reg::SP,
-                    offset: self.alloc.stack_index_of(&arg),
-                    dest,
-                });
-            } else {
-                self.asm.emit(instr::MovReg { src, dest });
-            }
-        }
-
-        let offset = self.asm.current_offset();
-        self.asm.emit_nop();
-        self.asm.fn_calls.push((function.clone(), offset));
-
-        if let Some(dest) = dest {
-            let (dest, stack_ptr) = self.map_reg_assign(dest, instr_index);
-
-            self.asm.emit(instr::MovReg { src: Reg::X0, dest });
-            self.asm.emit_stack_store(stack_ptr, dest);
-        }
+        assembler.emit_many([
+            Inst::LoadPair {
+                base: Register::SP,
+                first: Register::FP,
+                second: Register::LR,
+                offset: i7::new(2),
+            },
+            Inst::Ret {
+                value: Register::X0,
+            },
+        ]);
     }
 
-    fn emit_add(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
-        let a = self.map_reg_use(a, idx);
-        let b = self.map_reg_use(b, idx);
-
-        self.asm.emit(instr::Add {
-            a,
-            b: instr::Input::Reg(b),
-            dest,
-        });
-        self.asm.emit_stack_store(stack_ptr, dest);
+    fn emit(&mut self, inst: Inst<VirtualReg>) {
+        self.instructions.push((inst, InstMarker::None));
     }
 
-    fn emit_sub(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
-        let a = self.map_reg_use(a, idx);
-        let b = self.map_reg_use(b, idx);
-
-        self.asm.emit(instr::Sub {
-            a,
-            b: instr::Input::Reg(b),
-            dest,
-        });
-        self.asm.emit_stack_store(stack_ptr, dest);
-    }
-
-    fn emit_mul(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
-        let a = self.map_reg_use(a, idx);
-        let b = self.map_reg_use(b, idx);
-
-        self.asm.emit(instr::Mul { a, b, dest });
-        self.asm.emit_stack_store(stack_ptr, dest);
-    }
-
-    fn emit_div(&mut self, a: VirtualReg, b: VirtualReg, dest: VirtualReg, idx: usize) {
-        let (dest, stack_ptr) = self.map_reg_assign(dest, idx);
-        let a = self.map_reg_use(a, idx);
-        let b = self.map_reg_use(b, idx);
-
-        self.asm.emit(instr::Div {
-            a,
-            b,
-            dest,
-            signed: true,
-        });
-        self.asm.emit_stack_store(stack_ptr, dest);
-    }
-
-    fn emit_cmp(
-        &mut self,
-        a: VirtualReg,
-        b: VirtualReg,
-        cond: Condition,
-        dest: VirtualReg,
-        idx: usize,
-    ) {
-        let a = self.map_reg_use(a, idx);
-        let b = self.map_reg_use(b, idx);
-        let dest = self.map_reg_use(dest, idx);
-
-        self.asm.emit(instr::Cmp { a, b });
-        self.asm.emit(instr::BranchCond {
-            cond,
-            offset: i19::new(3),
-        });
-        self.asm.emit_movz(1, dest);
-        self.asm.emit(instr::Branch {
-            offset: i26::new(2),
-        });
-        self.asm.emit_movz(0, dest);
-    }
-
-    fn emit_branch_if(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
-        let cond = self.map_reg_use(cond, idx);
-
-        let instr_idx = self.asm.current_offset();
-        self.lazy_emit(label, move |offset| instr::BranchNotZero {
-            addr: i19::new((offset as i32 - instr_idx as i32) / 4),
-            reg: cond,
-        });
-    }
-
-    fn emit_branch_if_not(&mut self, cond: VirtualReg, label: Label, idx: OpIndex) {
-        let cond = self.map_reg_use(cond, idx);
-
-        let instr_idx = self.asm.current_offset();
-        self.lazy_emit(label, move |offset| instr::BranchZero {
-            addr: i19::new((offset as i32 - instr_idx as i32) / 4),
-            reg: cond,
-        });
-    }
-
-    fn emit_jump(&mut self, label: Label) {
-        let instr_idx = self.asm.current_offset();
-        self.lazy_emit(label, move |offset| {
-            let offset = i26::new((offset - instr_idx) as i32 / 4);
-            instr::Branch { offset }
-        });
-    }
-
-    fn emit_return(&mut self, src: SourceVal, idx: usize) {
-        match src {
-            SourceVal::Immediate(n) => self.asm.emit_movz(n, Reg::X0),
-            SourceVal::VReg(vreg) => {
-                let src = self.map_reg_use(vreg, idx);
-                self.asm.emit(instr::MovReg { src, dest: Reg::X0 });
-            }
-            SourceVal::String(str_id) => todo!(),
-        }
-
-        self.emit_jump(Label::Ret);
-    }
-
-    fn lazy_emit<F, I>(&mut self, label: Label, emit: F)
-    where
-        F: FnOnce(InstrIndex) -> I + 'static,
-        I: Instruction,
-    {
-        let offset = self.asm.current_offset();
-        self.asm.emit_nop();
-        self.lazy_emits.push(Box::new(move |emitter| {
-            let mapped = emitter.mapped_labels.get(&label).unwrap();
-            let instr = emit(*mapped);
-            emitter.asm.emit_at(offset, instr);
-        }));
-    }
-
-    pub fn end(mut self) {
-        self.mapped_labels
-            .insert(Label::Ret, self.asm.current_offset());
-        for lazy_emit in std::mem::take(&mut self.lazy_emits) {
-            lazy_emit(&mut self);
-        }
+    fn emit_many(&mut self, insts: impl IntoIterator<Item = Inst<VirtualReg>>) {
+        self.instructions
+            .extend(insts.into_iter().map(|inst| (inst, InstMarker::None)));
     }
 }

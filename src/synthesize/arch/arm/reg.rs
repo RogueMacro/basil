@@ -1,15 +1,16 @@
 use std::collections::{BTreeMap, HashMap, HashSet};
 
+use colored::Colorize;
 use num_derive::{FromPrimitive, ToPrimitive};
 use num_traits::FromPrimitive;
 use strum::EnumIter;
 use ux::u12;
 
 use crate::{
-    ir::{BasicBlock, Op, Operation, VirtualReg},
+    ir::{BasicBlock, Label, Op, Operation, Terminator, VirtualReg, lifetime::Lifetime},
     synthesize::arch::arm::{
-        ArmAssembler,
-        instr::{self, Input},
+        ArmAssembler, InstMarker,
+        instr::{self, BranchOffset, EitherReg, Input, Inst},
     },
 };
 
@@ -88,35 +89,36 @@ impl RegisterGuard {
     /// this function will ensure the value ends up in the returned register, and that the old
     /// value in the register is saved to the stack if necessary.
     pub fn unwrap(&self, asm: &mut ArmAssembler) -> Register {
-        match *self {
-            Self::Ready(reg) => reg,
-            Self::Load { load, reg } => {
-                asm.emit(instr::Load {
-                    base: Reg::SP,
-                    offset: load,
-                    dest: reg,
-                });
-                reg
-            }
-            Self::Save { save, reg } => {
-                asm.emit_stack_store(save, reg);
-                reg
-            }
-            Self::SaveAndLoad { save, load, reg } => {
-                asm.emit(instr::Store {
-                    base: Reg::SP,
-                    offset: Input::Imm(save),
-                    register: reg,
-                });
-
-                asm.emit(instr::Load {
-                    base: Reg::SP,
-                    offset: load,
-                    dest: reg,
-                });
-                reg
-            }
-        }
+        panic!("unwrap reg guard")
+        // match *self {
+        //     Self::Ready(reg) => reg,
+        //     Self::Load { load, reg } => {
+        //         asm.emit(instr::Load {
+        //             base: Reg::SP,
+        //             offset: load,
+        //             dest: reg,
+        //         });
+        //         reg
+        //     }
+        //     Self::Save { save, reg } => {
+        //         asm.emit_stack_store(save, reg);
+        //         reg
+        //     }
+        //     Self::SaveAndLoad { save, load, reg } => {
+        //         asm.emit(instr::Store {
+        //             base: Reg::SP,
+        //             offset: Input::Imm(save),
+        //             register: reg,
+        //         });
+        //
+        //         asm.emit(instr::Load {
+        //             base: Reg::SP,
+        //             offset: load,
+        //             dest: reg,
+        //         });
+        //         reg
+        //     }
+        // }
     }
 }
 
@@ -129,29 +131,34 @@ pub enum Location {
 
 #[derive(Default, Debug)]
 struct Stack {
-    size: u12,
+    size: u16,
     map: HashMap<VirtualReg, u12>,
     free_slots: Vec<u12>,
+    tmp_offset: u12,
 }
 
 impl Stack {
-    pub fn alloc(&mut self, vreg: VirtualReg, bytes: u16) -> u12 {
+    pub fn alloc(&mut self, vreg: VirtualReg) -> u12 {
         let index = self.free_slots.pop().unwrap_or_else(|| {
-            self.size = self.size + u12::new(bytes / 4);
-            self.size - u12::new(bytes / 4)
+            self.size += 1;
+            u12::new(self.size - 1)
         });
 
         self.map.insert(vreg, index);
 
-        index
+        println!("allocated {} at {} for {} bytes", vreg, index, 8);
+
+        index + self.tmp_offset
     }
 
-    // pub fn free(&mut self, slot: u12) {
-    //     assert!(slot < self.size);
-    //     assert!(!self.free_slots.contains(&slot));
-    //
-    //     self.free_slots.push(slot);
-    // }
+    pub fn offset_of(&mut self, vreg: &VirtualReg) -> u12 {
+        *self.map.get(vreg).unwrap() + self.tmp_offset
+    }
+
+    pub fn free(&mut self, vreg: VirtualReg) {
+        let offset = self.map.remove(&vreg).unwrap();
+        self.free_slots.retain(|o| *o != offset);
+    }
 }
 
 use Register::*;
@@ -159,631 +166,133 @@ const CALLER_SAVED_REGS: &[Register] = &[
     X0, X1, X2, X3, X4, X5, X6, X7, X8, X9, X10, X11, X12, X13, X14, X15,
 ];
 
-#[derive(Debug, Clone, Copy)]
-struct AllocEntry {
-    reg: Option<Register>,
-    stack: u12,
-}
-
-pub fn allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
-    assert!(args.len() <= 8, "only 8 arguments supported");
-
-    let mut regmap: RegMap = args
-        .iter()
-        .enumerate()
-        .map(|(i, &vreg)| {
-            (
-                (vreg, 0),
-                RegisterGuard::Ready(Register::from_usize(i).unwrap()),
-            )
-        })
-        .collect();
+pub fn allocate(
+    instructions: Vec<(Inst<VirtualReg>, InstMarker)>,
+    stack_size: u16,
+) -> (Vec<(Inst<Register>, InstMarker)>, u16) {
+    let mut final_insts = Vec::with_capacity(instructions.len());
 
     let mut stack = Stack::default();
-    let mut stack_saves: HashMap<usize, Vec<(Register, u12)>> = HashMap::new();
+    stack.size = stack_size;
 
-    let mut locations: HashMap<VirtualReg, AllocEntry> = args
-        .iter()
-        .enumerate()
-        .map(|(i, &vreg)| {
-            (
-                vreg,
-                AllocEntry {
-                    reg: Some(Register::from_usize(i).unwrap()),
-                    stack: stack.alloc(vreg, 8),
-                },
-            )
-        })
-        .collect();
+    let mut regs_free: HashSet<Register> = HashSet::from_iter(CALLER_SAVED_REGS.iter().copied());
+    let mut regs_in_use: HashSet<Register> = HashSet::new();
 
-    // let mut dirty_regs: Vec<(Register, VirtualReg)> = args
-    //     .iter()
-    //     .enumerate()
-    //     .map(|(i, &vreg)| (Register::from_usize(i).unwrap(), vreg))
-    //     .collect();
+    let mut vreg_map: HashMap<VirtualReg, Register> = HashMap::new();
 
-    let mut dirty_regs = Vec::new();
+    let mut last_uses = HashMap::new();
+    for (i, (inst, _)) in instructions.iter().enumerate() {
+        let (use1, use2, _) = inst.regs_to_alloc();
 
-    let mut clean_regs: Vec<(Register, VirtualReg)> = args
-        .iter()
-        .enumerate()
-        .map(|(i, &vreg)| (Register::from_usize(i).unwrap(), vreg))
-        .collect();
+        let mut f = |u| {
+            if let Some(u) = u {
+                last_uses.insert(u, i);
+            }
+        };
 
-    let mut unused_regs = CALLER_SAVED_REGS[args.len()..].to_vec();
+        f(use1);
+        f(use2);
+    }
 
-    for (i, op) in bb.ops.iter().enumerate() {
-        let (uses, assigned) = op.vregs_used();
+    let mut free_regs_on_fn_call_end = Vec::new();
 
-        for &vreg in uses.iter() {
-            let mut entry = *locations.entry(vreg).or_insert_with(|| {
-                let stack_pos = stack.alloc(vreg, 8);
-                AllocEntry {
-                    reg: None,
-                    stack: stack_pos,
+    for (i, (mut inst, marker)) in instructions.into_iter().enumerate() {
+        println!("[alloc] {:?} {:?}", inst, regs_free);
+
+        match &mut inst {
+            Inst::BeginFnCall {
+                reserved_stack_size,
+            } => {
+                for (vreg, reg) in vreg_map.iter() {
+                    regs_in_use.remove(reg);
+                    free_regs_on_fn_call_end.push(*reg);
+                    let offset: u16 = stack.alloc(*vreg).into();
+                    let offset = u12::new(offset);
+                    // let offset = u12::new(offset / 2);
+                    println!("[inst] str {:?} [sp, 0x{:0x}]", reg, offset);
+
+                    final_insts.push((
+                        Inst::Store {
+                            source: *reg,
+                            base: EitherReg::Phys(SP),
+                            offset,
+                        },
+                        InstMarker::None,
+                    ));
                 }
-            });
 
-            entry.reg = None;
+                stack.tmp_offset = u12::new(*reserved_stack_size as u16 / 8);
 
-            let guard: RegisterGuard = entry
-                .reg
-                .map(|reg| RegisterGuard::Load {
-                    load: entry.stack,
-                    reg,
-                })
-                .unwrap_or_else(|| {
-                    if let Some(reg) = unused_regs.pop() {
-                        clean_regs.push((reg, vreg));
-                        RegisterGuard::Load {
-                            load: entry.stack,
-                            reg,
-                        }
-                    } else if let Some((reg, old_vreg)) = clean_regs.pop() {
-                        locations.get_mut(&old_vreg).unwrap().reg = None;
-                        clean_regs.push((reg, vreg));
-                        RegisterGuard::Load {
-                            load: entry.stack,
-                            reg,
-                        }
-                    } else if let Some((reg, old_vreg)) = dirty_regs.pop() {
-                        let old_entry = locations.get_mut(&old_vreg).unwrap();
-                        old_entry.reg = None;
-                        clean_regs.push((reg, vreg));
-                        RegisterGuard::SaveAndLoad {
-                            save: old_entry.stack,
-                            load: entry.stack,
-                            reg,
-                        }
-                    } else {
-                        unreachable!()
-                    }
-                });
-
-            locations.get_mut(&vreg).unwrap().reg = Some(guard.inner_reg());
-            regmap.insert((vreg, i), guard);
+                continue;
+            }
+            Inst::EndFnCall => {
+                stack.tmp_offset = u12::new(0);
+                vreg_map.clear();
+                regs_free.extend(free_regs_on_fn_call_end.drain(..));
+                continue;
+            }
+            Inst::Load { base, offset, dest } => {
+                if stack.tmp_offset > u12::new(0) {
+                    println!("offseting by {}", stack.tmp_offset);
+                }
+                *offset = *offset + stack.tmp_offset;
+            }
+            _ => {}
         }
 
-        if matches!(op, Operation::Call { .. }) {
-            for (_, vreg) in clean_regs.drain(..) {
-                locations.get_mut(&vreg).unwrap().reg = None;
+        let (use1, use2, dest) = inst.regs_to_alloc();
+
+        let dest = dest.map(|vreg| {
+            if let Some(reg) = vreg_map.get(&vreg) {
+                return *reg;
             }
 
-            let save = dirty_regs
-                .drain(..)
-                .map(|(reg, vreg)| {
-                    let entry = locations.get_mut(&vreg).unwrap();
-                    entry.reg = None;
-                    (reg, entry.stack)
-                })
-                .collect::<Vec<_>>();
-
-            stack_saves.insert(i, save);
-            unused_regs = CALLER_SAVED_REGS.to_vec();
-        }
-
-        if let Some(vreg) = assigned
-            && !uses.contains(&vreg)
-        {
-            let entry = *locations.entry(vreg).or_insert_with(|| AllocEntry {
-                reg: None,
-                stack: stack.alloc(vreg, 8),
-            });
-
-            let guard: RegisterGuard = entry.reg.map(RegisterGuard::Ready).unwrap_or_else(|| {
-                if let Some(reg) = unused_regs.pop() {
-                    clean_regs.push((reg, vreg));
-                    RegisterGuard::Ready(reg)
-                } else if let Some((reg, old_vreg)) = clean_regs.pop() {
-                    locations.get_mut(&old_vreg).unwrap().reg = None;
-                    clean_regs.push((reg, vreg));
-                    RegisterGuard::Ready(reg)
-                } else if let Some((reg, old_vreg)) = dirty_regs.pop() {
-                    let old_entry = locations.get_mut(&old_vreg).unwrap();
-                    old_entry.reg = None;
-                    clean_regs.push((reg, vreg));
-                    RegisterGuard::Save {
-                        save: old_entry.stack,
-                        reg,
-                    }
-                } else {
-                    unreachable!()
-                }
-            });
-
-            locations.get_mut(&vreg).unwrap().reg = Some(guard.inner_reg());
-            regmap.insert((vreg, i), guard);
-        }
-    }
-
-    let a = Allocator {
-        regmap,
-        stack,
-        stack_saves,
-    };
-    // a.print_debug();
-    a
-}
-
-/// Allocates physical registers for each virtual register at any given instruction.
-///
-/// # Returns
-///
-/// The generated allocation map ([Allocator])
-pub fn _allocate(bb: &BasicBlock, args: &[VirtualReg]) -> Allocator {
-    // TODO: Use callee-saved registers
-
-    // General-purpose caller-saved registers
-    let mut phys_regs: Vec<Register> = CALLER_SAVED_REGS.to_vec();
-
-    let mut location_map: BTreeMap<VirtualReg, Location> = args
-        .iter()
-        .enumerate()
-        .map(|(i, &vreg)| (vreg, Location::Register(Register::from_usize(i).unwrap())))
-        .collect();
-
-    let mut lifetimes = bb.lifetimes();
-    let lifetimes_imm = lifetimes.clone();
-
-    let last_uses: Vec<(VirtualReg, usize)> = lifetimes
-        .iter()
-        .map(|(vreg, lifetime)| (*vreg, lifetime.end().unwrap() - 1))
-        .collect();
-
-    let mut regmap = RegMap::new();
-    let mut stack = Stack::default();
-    let mut stack_saves: HashMap<usize, Vec<(Register, u12)>> = HashMap::new();
-
-    // for (op_idx, op) in bb.ops.iter().enumerate() {
-    //     let mut retired_regs = Vec::new();
-    //
-    //     for (&vreg, lifetime) in lifetimes.iter_mut() {
-    //         if let Some(interval) = lifetime.at_mut(op_idx) {
-    //             // This vreg overlaps (is active) at this op index
-    //             let reg_guard: RegisterGuard =
-    //                 match (interval.register, location_map.get(&vreg).copied()) {
-    //                     (Some(reg), _) => {
-    //                         // This interval has already been allocated.
-    //                         interval.register = Some(reg);
-    //                         RegisterGuard::Ready(Register::from_u32(reg).unwrap())
-    //                     }
-    //                     (None, Some(Location::Register(reg))) => {
-    //                         // This value already exists in a register from a previous allocation.
-    //                         interval.register = Some(reg as u32);
-    //                         RegisterGuard::Ready(reg)
-    //                     }
-    //
-    //                     (None, location) => {
-    //                         let location = location.map(|l| {
-    //                             let Location::Stack(offset) = l else {
-    //                                 unreachable!()
-    //                             };
-    //                             offset
-    //                         });
-    //
-    //                         match (phys_regs.pop(), location) {
-    //                             (Some(reg), Some(offset)) => {
-    //                                 interval.register = Some(reg as u32);
-    //                                 RegisterGuard::Load(offset, reg)
-    //                             }
-    //                             (Some(reg), None) => {
-    //                                 interval.register = Some(reg as u32);
-    //                                 RegisterGuard::Ready(reg)
-    //                             }
-    //                             (None, location) => {
-    //                                 // All physical registers busy, look for dead virtual registers before pushing
-    //                                 // one onto the stack.
-    //
-    //                                 let mut dead_vreg = None;
-    //
-    //                                 for (vreg, loc) in location_map.iter() {
-    //                                     if let Location::Register(reg) = loc {
-    //                                         let (_, end) =
-    //                                             last_uses.iter().find(|(v, _)| v == vreg).unwrap();
-    //                                         if *end <= op_idx {
-    //                                             dead_vreg = Some((*vreg, *reg));
-    //                                             break;
-    //                                         }
-    //                                     }
-    //                                 }
-    //
-    //                                 match (dead_vreg, location) {
-    //                                     (Some((dead_vreg, reg)), Some(offset)) => {
-    //                                         retired_regs.push(dead_vreg);
-    //                                         interval.register = Some(reg as u32);
-    //                                         RegisterGuard::Load(offset, reg)
-    //                                     }
-    //                                     (Some((dead_vreg, reg)), None) => {
-    //                                         retired_regs.push(dead_vreg);
-    //                                         interval.register = Some(reg as u32);
-    //                                         RegisterGuard::Ready(reg)
-    //                                     }
-    //                                     (None, location) => {
-    //                                         // All busy virtual registers are to be used in the future.
-    //                                         // Therefor we must save one register to the stack (preferrably the one to be
-    //                                         // used last) that is not currently overlapping.
-    //
-    //                                         let (&furthest_use_vreg, &reg, _) = location_map
-    //                                             .iter()
-    //                                             .filter_map(|(vreg, loc)| {
-    //                                                 if let Location::Register(reg) = loc {
-    //                                                     let next_use = lifetimes_imm
-    //                                                         .get(vreg)
-    //                                                         .unwrap()
-    //                                                         .next_use_after(op_idx)
-    //                                                         .unwrap_or(usize::MAX);
-    //
-    //                                                     Some((vreg, reg, next_use))
-    //                                                 } else {
-    //                                                     None
-    //                                                 }
-    //                                             })
-    //                                             .max_by_key(|(_, _, next_use)| *next_use)
-    //                                             .unwrap();
-    //
-    //                                         location_map.insert(
-    //                                             furthest_use_vreg,
-    //                                             Location::Stack(stack.alloc(8)),
-    //                                         );
-    //                                         interval.register = Some(reg as u32);
-    //
-    //                                         if let Some(offset) = location {
-    //                                             RegisterGuard::SaveAndLoad(
-    //                                                 stack.alloc(8),
-    //                                                 offset,
-    //                                                 reg,
-    //                                             )
-    //                                         } else {
-    //                                             RegisterGuard::Save(stack.alloc(8), reg)
-    //                                         }
-    //                                     }
-    //                                 }
-    //                             }
-    //                         }
-    //                     }
-    //                 };
-    //
-    //             match reg_guard {
-    //                 RegisterGuard::Load(slot, _) | RegisterGuard::SaveAndLoad(_, slot, _) => {
-    //                     stack.free(slot);
-    //                 }
-    //                 _ => (),
-    //             }
-    //
-    //             location_map.insert(vreg, Location::Register(reg_guard.inner_reg()));
-    //             regmap.insert((vreg, op_idx), reg_guard);
-    //         }
-    //     }
-    //
-    //     if let Op::Call { .. } = op {
-    //         let regs_to_save: Vec<(Register, u12)> = location_map
-    //             .values_mut()
-    //             .filter_map(|l| match *l {
-    //                 Location::Register(r) => {
-    //                     let stack_offset = stack.alloc(8);
-    //                     *l = Location::Stack(stack_offset);
-    //                     Some((r, stack_offset))
-    //                 }
-    //                 _ => None,
-    //             })
-    //             .collect();
-    //
-    //         if !regs_to_save.is_empty() {
-    //             stack_saves.insert(op_idx, regs_to_save);
-    //             phys_regs.clear();
-    //             phys_regs.extend_from_slice(CALLER_SAVED_REGS);
-    //         }
-    //     }
-    //
-    //     for vreg in retired_regs {
-    //         location_map.remove(&vreg);
-    //     }
-    // }
-
-    // TODO
-    // difference between dest/src registers:
-    // dead src reg can only be reused for a dest reg
-    // on the same instruction, not another src reg.
-
-    // crate::ir::lifetime::print_lifetimes(&lifetimes);
-
-    Default::default()
-}
-
-/// A map from (vreg, instruction position) to a [RegisterGuard].
-type RegMap = BTreeMap<(VirtualReg, usize), RegisterGuard>;
-
-#[derive(Debug, Default)]
-pub struct Allocator {
-    regmap: RegMap,
-    stack: Stack,
-    stack_saves: HashMap<usize, Vec<(Register, u12)>>,
-}
-
-impl Allocator {
-    pub fn map(&mut self, vreg: VirtualReg, instr_index: usize) -> RegisterGuard {
-        let entry = self
-            .regmap
-            .get_mut(&(vreg, instr_index))
-            .unwrap_or_else(|| {
-                panic!(
-                    "no physical register mapped to {} at index {}",
-                    vreg, instr_index
-                )
-            });
-
-        let guard = *entry;
-        *entry = RegisterGuard::Ready(guard.inner_reg());
-        guard
-    }
-
-    pub fn stack_size(&self) -> u12 {
-        self.stack.size
-    }
-
-    pub fn stack_save(&self, instr_index: usize) -> Option<&Vec<(Register, u12)>> {
-        self.stack_saves.get(&instr_index)
-    }
-
-    pub fn print_debug(&self) {
-        let mut vec: Vec<(VirtualReg, usize, RegisterGuard)> = self
-            .regmap
-            .iter()
-            .map(|((vreg, idx), g)| (*vreg, *idx, *g))
-            .collect();
-        vec.sort_by(|a, b| {
-            if a.1 == b.1 {
-                a.0.cmp(&b.0)
-            } else {
-                a.1.cmp(&b.1)
-            }
+            let reg = *regs_free.iter().next().unwrap();
+            regs_free.remove(&reg);
+            regs_in_use.insert(reg);
+            vreg_map.insert(vreg, reg);
+            reg
         });
 
-        let mut last = usize::MAX;
-        for (vreg, idx, guard) in vec {
-            if last != idx {
-                last = idx;
-                println!("\ninstruction {}", idx);
+        let mut alloc_use = |vreg| {
+            let reg = if let Some(reg) = vreg_map.get(&vreg) {
+                println!("{} is already in register {:?}", vreg, reg);
+                *reg
+            } else {
+                let offset = stack.offset_of(&vreg);
+                println!("inserting load of {} at offset {}", vreg, offset);
+                let reg = *regs_free.iter().next().unwrap();
+                regs_free.remove(&reg);
+                vreg_map.insert(vreg, reg);
+
+                final_insts.push((
+                    Inst::Load {
+                        base: EitherReg::Phys(SP),
+                        offset,
+                        dest: reg,
+                    },
+                    InstMarker::None,
+                ));
+
+                reg
+            };
+
+            let last_use = *last_uses.get(&vreg).unwrap();
+            if i >= last_use {
+                regs_in_use.remove(&reg);
+                regs_free.insert(reg);
+                vreg_map.remove(&vreg);
             }
 
-            println!("{} -> {:?}", vreg, guard);
-        }
+            reg
+        };
+
+        let use1 = use1.map(&mut alloc_use);
+        let use2 = use2.map(&mut alloc_use);
+
+        let inst = inst.alloc_regs((use1, use2, dest));
+        final_insts.push((inst, marker));
     }
 
-    pub fn stack_index_of(&self, vreg: &VirtualReg) -> u12 {
-        *self
-            .stack
-            .map
-            .get(vreg)
-            .unwrap_or_else(|| panic!("{} is not mapped to a stack index", vreg))
-    }
+    (final_insts, stack.size * 8)
 }
-
-// #[cfg(test)]
-// mod tests {
-//     use ux::u12;
-//
-//     use super::*;
-//     use crate::ir::{BasicBlock, Operation, SourceVal, VirtualReg};
-//
-//     /// Constructs a [BasicBlock] from a list of operations for use in tests.
-//     fn make_bb(ops: Vec<Operation>) -> BasicBlock {
-//         BasicBlock {
-//             ops,
-//             labels: HashMap::new(),
-//         }
-//     }
-//
-//     // ---- Stack ----
-//
-//     #[test]
-//     fn stack_alloc_starts_at_zero() {
-//         let mut stack = Stack::default();
-//         assert_eq!(stack.size, u12::new(0));
-//         let slot = stack.alloc(8);
-//         assert_eq!(slot, u12::new(0));
-//         assert_eq!(stack.size, u12::new(1));
-//     }
-//
-//     #[test]
-//     fn stack_alloc_increments_each_call() {
-//         let mut stack = Stack::default();
-//         assert_eq!(stack.alloc(8), u12::new(0));
-//         assert_eq!(stack.alloc(8), u12::new(1));
-//         assert_eq!(stack.alloc(8), u12::new(2));
-//         assert_eq!(stack.size, u12::new(3));
-//     }
-//
-//     #[test]
-//     fn stack_free_recycles_slot() {
-//         let mut stack = Stack::default();
-//         let s0 = stack.alloc(8);
-//         let _s1 = stack.alloc(8);
-//         stack.free(s0);
-//         // stack_size does not shrink
-//         assert_eq!(stack.size, u12::new(2));
-//         // next alloc reuses the freed slot
-//         let reused = stack.alloc(8);
-//         assert_eq!(reused, s0);
-//         assert_eq!(stack.size, u12::new(2));
-//     }
-//
-//     #[test]
-//     #[should_panic]
-//     fn stack_free_out_of_bounds_panics() {
-//         let mut stack = Stack::default();
-//         stack.free(u12::new(0)); // nothing allocated yet
-//     }
-//
-//     #[test]
-//     #[should_panic]
-//     fn stack_double_free_panics() {
-//         let mut stack = Stack::default();
-//         let slot = stack.alloc(8);
-//         stack.free(slot);
-//         stack.free(slot); // second free of the same slot
-//     }
-//
-//     // ---- allocate() ----
-//
-//     #[test]
-//     fn allocate_empty_block_has_zero_stack_size() {
-//         let alloc = allocate(&make_bb(vec![]), &[]);
-//         assert_eq!(alloc.stack_size(), u12::new(0));
-//     }
-//
-//     #[test]
-//     fn allocate_single_vreg_uses_same_register() {
-//         // v0 is defined at op 0 and used at op 1; both uses should map to the
-//         // same physical register with no spill.
-//         let bb = make_bb(vec![
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(42),
-//                 dest: VirtualReg(0),
-//             },
-//             Operation::Return {
-//                 value: SourceVal::VReg(VirtualReg(0)),
-//             },
-//         ]);
-//         let alloc = allocate(&bb, &[]);
-//         assert_eq!(alloc.stack_size(), u12::new(0));
-//         let g0 = alloc.map(VirtualReg(0), 0);
-//         let g1 = alloc.map(VirtualReg(0), 1);
-//         assert!(matches!(g0, RegisterGuard::Ready(_)));
-//         assert!(matches!(g1, RegisterGuard::Ready(_)));
-//         assert_eq!(g0.inner_reg(), g1.inner_reg());
-//     }
-//
-//     #[test]
-//     fn allocate_simultaneously_live_vregs_get_distinct_registers() {
-//         // v0 and v1 are both live at the Add (op 2), so they must occupy
-//         // different physical registers.
-//         let bb = make_bb(vec![
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(1),
-//                 dest: VirtualReg(0),
-//             },
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(2),
-//                 dest: VirtualReg(1),
-//             },
-//             Operation::Add {
-//                 a: VirtualReg(0),
-//                 b: VirtualReg(1),
-//                 dest: VirtualReg(2),
-//             },
-//             Operation::Return {
-//                 value: SourceVal::VReg(VirtualReg(2)),
-//             },
-//         ]);
-//         let alloc = allocate(&bb, &[]);
-//         assert_eq!(alloc.stack_size(), u12::new(0));
-//         let g0 = alloc.map(VirtualReg(0), 2);
-//         let g1 = alloc.map(VirtualReg(1), 2);
-//         let g2 = alloc.map(VirtualReg(2), 2);
-//         assert!(matches!(g0, RegisterGuard::Ready(_)));
-//         assert!(matches!(g1, RegisterGuard::Ready(_)));
-//         assert!(matches!(g2, RegisterGuard::Ready(_)));
-//         assert_ne!(g0.inner_reg(), g1.inner_reg());
-//         assert_ne!(g0.inner_reg(), g2.inner_reg());
-//         assert_ne!(g1.inner_reg(), g2.inner_reg());
-//     }
-//
-//     #[test]
-//     fn allocate_uses_caller_saved_registers() {
-//         let bb = make_bb(vec![
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(5),
-//                 dest: VirtualReg(0),
-//             },
-//             Operation::Return {
-//                 value: SourceVal::VReg(VirtualReg(0)),
-//             },
-//         ]);
-//         let alloc = allocate(&bb, &[]);
-//         let reg = alloc.map(VirtualReg(0), 0).inner_reg();
-//         assert!(CALLER_SAVED_REGS.contains(&reg));
-//     }
-//
-//     // ---- Allocator::stack_save ----
-//
-//     #[test]
-//     fn allocator_stack_save_none_for_non_call_ops() {
-//         let bb = make_bb(vec![
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(1),
-//                 dest: VirtualReg(0),
-//             },
-//             Operation::Return {
-//                 value: SourceVal::VReg(VirtualReg(0)),
-//             },
-//         ]);
-//         let alloc = allocate(&bb, &[]);
-//         assert!(alloc.stack_save(0).is_none());
-//         assert!(alloc.stack_save(1).is_none());
-//     }
-//
-//     #[test]
-//     fn allocator_stack_save_some_for_call_when_registers_are_live() {
-//         // v0 is assigned before a Call, so its register must be preserved.
-//         let bb = make_bb(vec![
-//             Operation::Assign {
-//                 src: SourceVal::Immediate(1),
-//                 dest: VirtualReg(0),
-//             },
-//             Operation::Call {
-//                 function: String::from("foo"),
-//                 args: vec![],
-//                 dest: None,
-//             },
-//             Operation::Return {
-//                 value: SourceVal::VReg(VirtualReg(0)),
-//             },
-//         ]);
-//         let alloc = allocate(&bb, &[]);
-//         let saves = alloc.stack_save(1);
-//         assert!(saves.is_some());
-//         assert!(!saves.unwrap().is_empty());
-//     }
-//
-//     #[test]
-//     fn allocator_stack_save_none_for_call_when_no_registers_are_live() {
-//         // No vregs have been assigned before the Call, so nothing needs saving.
-//         let bb = make_bb(vec![Operation::Call {
-//             function: String::from("foo"),
-//             args: vec![],
-//             dest: None,
-//         }]);
-//         let alloc = allocate(&bb, &[]);
-//         assert!(alloc.stack_save(0).is_none());
-//     }
-//
-//     // ---- Allocator::map ----
-//
-//     #[test]
-//     #[should_panic]
-//     fn allocator_map_panics_for_unknown_vreg() {
-//         let alloc = allocate(&make_bb(vec![]), &[]);
-//         alloc.map(VirtualReg(99), 0);
-//     }
-// }

@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use crate::{
     analyze::{
@@ -19,6 +19,7 @@ impl IR {
                 name, body, args, ..
             } = item
             {
+                println!("-- {} --", name);
                 let initial_args: Vec<_> = args
                     .into_iter()
                     .enumerate()
@@ -27,14 +28,21 @@ impl IR {
 
                 let vreg_args = initial_args.iter().map(|(_, vreg)| *vreg).collect();
 
-                let body = BlockBuilder::new(&mut ir, initial_args).build(body);
+                let (body, stack, stack_size) =
+                    BlockBuilder::new(&mut ir, initial_args).build(body);
 
                 ir.items.push(Item::Function {
                     name,
                     args: vreg_args,
+                    stack,
+                    stack_size,
                     body,
                 });
             };
+        }
+
+        if let Err(dupes) = crate::ir::ssa::verify_ssa(&ir) {
+            panic!("ir is not ssa, duplicates: {:?}", dupes);
         }
 
         ir
@@ -45,41 +53,98 @@ struct BlockBuilder<'ir> {
     ir: &'ir mut IR,
     blocks: Vec<BasicBlock>,
     var_to_vreg: HashMap<String, VirtualReg>,
+    proc_args: HashMap<VirtualReg, u32>,
+    stack: HashMap<VirtualReg, u32>,
+    stack_size: u32,
     vreg_counter: u32,
     label_counter: u32,
 
     block_label: Label,
-    block_args: Vec<VirtualReg>,
+    // block_args: Vec<VirtualReg>,
     block_ops: Vec<Op>,
     block_decls: Vec<VirtualReg>,
 }
 
 impl<'ir> BlockBuilder<'ir> {
     pub fn new(ir: &'ir mut IR, initial_args: Vec<(String, VirtualReg)>) -> Self {
-        let block_args = initial_args.iter().map(|(_, vreg)| *vreg).collect();
+        // let block_args = initial_args.iter().map(|(_, vreg)| *vreg).collect();
+        let n_args = initial_args.len();
+        // let stack = HashMap::from_iter(
+        //     initial_args
+        //         .iter()
+        //         .enumerate()
+        //         .map(|(i, (var, _))| (var.clone(), (i as u32) * 8)),
+        // );
+        let proc_args = HashMap::from_iter(
+            initial_args
+                .iter()
+                .enumerate()
+                .map(|(i, (_, vreg))| (*vreg, (i as u32))),
+        );
+        // let stack_size = (stack.len() as u32) * 8;
 
         Self {
             ir,
             blocks: Vec::new(),
-            var_to_vreg: HashMap::from_iter(initial_args),
-            vreg_counter: 0,
+            var_to_vreg: initial_args.into_iter().collect(),
+            proc_args,
+            stack: HashMap::new(),
+            stack_size: 0,
+            vreg_counter: n_args as u32,
             label_counter: 0,
 
             block_label: Label::Entry,
-            block_args,
+            // block_args,
             block_ops: Vec::new(),
             block_decls: Vec::new(),
         }
     }
 
-    pub fn build(mut self, block: Vec<Statement>) -> Vec<BasicBlock> {
+    pub fn build(
+        mut self,
+        block: Vec<Statement>,
+    ) -> (Vec<BasicBlock>, HashMap<VirtualReg, u32>, u32) {
         self.consume(block);
+        self.commit_block(Terminator::Branch { label: Label::End }, Label::End);
 
-        if !self.block_ops.is_empty() {
-            self.commit_block(Terminator::Branch { label: Label::Ret }, Label::Ret);
+        let mut run_again = true;
+        while run_again {
+            run_again = false;
+
+            let mut succ_args = Vec::new();
+            for bb in self.blocks.iter() {
+                let mut args: HashSet<VirtualReg> = HashSet::new();
+                for succ_label in bb.successors() {
+                    if let Some(_args) = self
+                        .blocks
+                        .iter()
+                        .find(|bb2| bb2.label == succ_label)
+                        .map(|bb2| &bb2.args)
+                    {
+                        args.extend(_args.iter().filter(|vreg| !bb.decls.contains(vreg)));
+                    }
+                }
+
+                succ_args.push(args);
+            }
+
+            for (bb, append_args) in self.blocks.iter_mut().zip(succ_args) {
+                let len = bb.args.len();
+                bb.args.extend(append_args);
+                if bb.args.len() > len {
+                    run_again = true;
+                }
+            }
         }
 
-        self.blocks
+        // self.stack.extend(
+        //     self.proc_args
+        //         .into_iter()
+        //         .enumerate()
+        //         .map(|(i, vreg)| (vreg, (i as u32) + self.stack_size + 16)),
+        // );
+
+        (self.blocks, self.stack, self.stack_size)
     }
 
     fn consume(&mut self, block: Vec<Statement>) {
@@ -91,22 +156,36 @@ impl<'ir> BlockBuilder<'ir> {
                         "variable declared twice"
                     );
 
-                    let dest = self.get_or_insert_vreg(var);
-                    let src = self.unroll_expr(expr, Some(dest));
+                    let stack_offset = self.get_or_insert_stack_var(var);
+                    let dest = self.get_vreg();
+                    let src = self.flatten_expr(expr, Some(dest));
 
                     if src != SourceVal::VReg(dest) {
                         self.block_ops.push(Op::Assign { src, dest });
                         self.block_decls.push(dest);
                     }
+
+                    self.block_ops.push(Op::Store {
+                        src: SourceVal::VReg(dest),
+                        stack_offset,
+                    });
                 }
 
                 Statement::Assign { var, expr, .. } => {
-                    let dest = self.get_or_insert_vreg(var.symbol());
-                    let src = self.unroll_expr(expr, Some(dest));
+                    let dest = self.get_vreg();
+                    println!("{} => {}", var.symbol(), dest);
+                    // *self
+                    //     .var_to_vreg
+                    //     .get_mut(var.symbol())
+                    //     .expect("variable was not declared before assignment") = dest;
 
-                    if !self.block_decls.contains(&dest) {
-                        self.block_args.push(dest);
-                    }
+                    let stack_offset = self.get_or_insert_stack_var(var.symbol());
+                    let dest = self.get_vreg();
+                    let src = self.flatten_expr(expr, Some(dest));
+
+                    // if !self.block_decls.contains(&dest) {
+                    //     self.block_args.push(dest);
+                    // }
 
                     match var {
                         Assignable::Var(_) => {
@@ -120,14 +199,19 @@ impl<'ir> BlockBuilder<'ir> {
                             // self.ops.push(Op::StorePointer { src, ptr: dest });
                         }
                     }
+
+                    self.block_ops.push(Op::Store {
+                        src: SourceVal::VReg(dest),
+                        stack_offset,
+                    });
                 }
 
                 Statement::Expr(expr) => {
-                    self.unroll_expr(expr, None);
+                    self.flatten_expr(expr, None);
                 }
 
                 Statement::If { guard, body } => {
-                    let cond = self.unroll_expr(guard, None);
+                    let cond = self.flatten_expr(guard, None);
                     let cond = self.src_to_vreg(cond);
 
                     let if_true = self.next_label();
@@ -146,26 +230,65 @@ impl<'ir> BlockBuilder<'ir> {
                     self.commit_block(Terminator::Branch { label: if_false }, if_false);
                 }
                 Statement::Return(expr) => {
-                    let value = self.unroll_expr(expr, None);
+                    let value = self.flatten_expr(expr, None);
+                    let value = self.src_to_vreg(value);
                     let new_label = self.next_label();
                     self.commit_block(Terminator::Return { value }, new_label);
                 }
-                Statement::WhileLoop { guard, body } => todo!(),
+                Statement::WhileLoop { guard, body } => {
+                    let guard_label = self.next_label();
+                    let body_label = self.next_label();
+                    let end_label = self.next_label();
+
+                    self.commit_block(Terminator::Branch { label: guard_label }, guard_label);
+
+                    let cond = self.flatten_expr(guard, None);
+                    let cond = self.src_to_vreg(cond);
+                    self.commit_block(
+                        Terminator::BranchCond {
+                            cond,
+                            if_true: body_label,
+                            if_false: end_label,
+                        },
+                        body_label,
+                    );
+
+                    self.consume(body);
+                    self.commit_block(Terminator::Branch { label: guard_label }, end_label);
+                }
             }
         }
     }
 
     fn commit_block(&mut self, terminator: Terminator, new_label: Label) {
         let label = std::mem::replace(&mut self.block_label, new_label);
-        let args = std::mem::take(&mut self.block_args);
+        // let args = std::mem::take(&mut self.block_args);
         let ops = std::mem::take(&mut self.block_ops);
 
-        self.block_decls.clear();
+        let mut args = HashSet::new();
+        if let Some(vreg) = terminator.vreg_used() {
+            args.insert(vreg);
+        }
+
+        for op in ops.iter() {
+            let (uses, assigned) = op.vregs_used();
+            args.extend(uses);
+            if let Some(assigned) = assigned {
+                args.insert(assigned);
+            }
+        }
+
+        for vreg in self.block_decls.iter() {
+            args.remove(vreg);
+        }
+
+        let decls = std::mem::take(&mut self.block_decls);
 
         self.blocks.push(BasicBlock {
             label,
             args,
             ops,
+            decls,
             terminator,
         });
     }
@@ -176,27 +299,41 @@ impl<'ir> BlockBuilder<'ir> {
         label
     }
 
-    fn unroll_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
+    fn flatten_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
         match expr.inner {
             ExprInner::Const(num) => SourceVal::Immediate(num),
             ExprInner::Character(c) => SourceVal::Immediate(c as i64),
             ExprInner::String(string) => {
-                let str_id = self.ir.alloc_str_literal(string);
+                let str_id = self.ir.insert_str_literal(string);
                 SourceVal::String(str_id)
             }
             ExprInner::Bool(b) => SourceVal::Immediate(b as i64),
 
-            ExprInner::Variable(var) => SourceVal::VReg(self.expect_vreg(&var)),
+            ExprInner::Variable(var) => {
+                let dest = self.get_vreg();
+
+                self.load_var(&var, dest);
+
+                SourceVal::VReg(dest)
+            }
             ExprInner::Pointer(var) => {
-                let val = self.expect_vreg(&var);
+                // let stack_offset = self.get_stack_offset(&var);
+                let val = *self.var_to_vreg.get(&var).unwrap();
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
 
-                self.block_ops.push(Op::AddressOf { val, dest });
+                if let Some(&offset) = self.proc_args.get(&val) {
+                    self.block_ops.push(Op::AddressOfArg { offset, dest });
+                } else {
+                    self.block_ops.push(Op::AddressOf { val, dest });
+                }
+
                 SourceVal::VReg(dest)
             }
             ExprInner::Deref(var, typ) => {
-                let ptr = self.expect_vreg(&var);
+                let ptr = self.get_vreg();
                 let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.load_var(&var, ptr);
 
                 self.block_ops.push(Op::LoadPointer {
                     ptr,
@@ -208,8 +345,8 @@ impl<'ir> BlockBuilder<'ir> {
 
             ExprInner::Arithmetic(expr1, expr2, op, _sign) => {
                 // TODO: sign
-                let a = self.unroll_expr(*expr1, None);
-                let b = self.unroll_expr(*expr2, None);
+                let a = self.flatten_expr(*expr1, None);
+                let b = self.flatten_expr(*expr2, None);
 
                 let a = self.src_to_vreg(a);
                 let b = self.src_to_vreg(b);
@@ -219,15 +356,15 @@ impl<'ir> BlockBuilder<'ir> {
                 match op {
                     ArithmeticOp::Add => self.block_ops.push(Op::Add { a, b, dest }),
                     ArithmeticOp::Sub => self.block_ops.push(Op::Subtract { a, b, dest }),
-                    ArithmeticOp::Mult => self.block_ops.push(Op::Multiply { a, b, dest }),
+                    ArithmeticOp::Mul => self.block_ops.push(Op::Multiply { a, b, dest }),
                     ArithmeticOp::Div => self.block_ops.push(Op::Divide { a, b, dest }),
                 }
 
                 SourceVal::VReg(dest)
             }
             ExprInner::Comparison(expr1, expr2, op, sign) => {
-                let expr1 = self.unroll_expr(*expr1, None);
-                let expr2 = self.unroll_expr(*expr2, None);
+                let expr1 = self.flatten_expr(*expr1, None);
+                let expr2 = self.flatten_expr(*expr2, None);
 
                 let expr1 = self.src_to_vreg(expr1);
                 let expr2 = self.src_to_vreg(expr2);
@@ -248,7 +385,7 @@ impl<'ir> BlockBuilder<'ir> {
                 let args = args
                     .into_iter()
                     .map(|e| {
-                        let src = self.unroll_expr(e, None);
+                        let src = self.flatten_expr(e, None);
                         self.src_to_vreg(src)
                     })
                     .collect();
@@ -264,30 +401,63 @@ impl<'ir> BlockBuilder<'ir> {
                 SourceVal::VReg(dest)
             }
 
-            ExprInner::Cast(expr, _typ) => self.unroll_expr(*expr, dest),
+            ExprInner::Cast(expr, _typ) => self.flatten_expr(*expr, dest),
         }
     }
 
-    fn get_or_insert_vreg<S: Into<String> + AsRef<str>>(&mut self, var: S) -> VirtualReg {
-        if let Some(&vreg) = self.var_to_vreg.get(var.as_ref()) {
-            vreg
+    fn load_var(&mut self, var: &str, dest: VirtualReg) {
+        let vreg = *self.var_to_vreg.get(var).unwrap();
+
+        println!("Load var {} ({})", var, vreg);
+
+        if let Some(&offset) = self.proc_args.get(&vreg) {
+            println!("=> it is a function argument at offset {}", offset);
+            self.block_ops.push(Op::LoadArg { offset, dest });
         } else {
-            let vreg = self.get_vreg();
-            self.var_to_vreg.insert(var.into(), vreg);
-            vreg
+            let offset = self.get_stack_offset(var);
+            println!("=> it is a stack variable at offset {}", offset);
+            self.block_ops.push(Op::Load {
+                stack_offset: offset,
+                dest,
+            });
         }
     }
 
-    fn expect_vreg(&self, var: &str) -> VirtualReg {
-        *self
+    fn get_or_insert_stack_var<S: Into<String> + AsRef<str>>(&mut self, var: S) -> u32 {
+        let vreg = self
+            .var_to_vreg
+            .get(var.as_ref())
+            .copied()
+            .unwrap_or_else(|| {
+                let vreg = self.get_vreg();
+                self.var_to_vreg.insert(var.into(), vreg);
+                vreg
+            });
+
+        self.stack.get(&vreg).copied().unwrap_or_else(|| {
+            self.stack.insert(vreg, self.stack_size);
+            self.stack_size += 8;
+            println!("adding {} to stack at offset {}", vreg, self.stack_size - 8);
+            self.stack_size - 8
+        })
+    }
+
+    fn get_stack_offset(&self, var: &str) -> u32 {
+        let vreg = self
             .var_to_vreg
             .get(var)
-            .unwrap_or_else(|| panic!("undefined variable '{}'", var))
+            .unwrap_or_else(|| panic!("undefined variable '{}'", var));
+
+        *self
+            .stack
+            .get(vreg)
+            .unwrap_or_else(|| panic!("variable {} is not on the stack", var))
     }
 
     fn get_vreg(&mut self) -> VirtualReg {
         let vreg = VirtualReg(self.vreg_counter);
         self.vreg_counter += 1;
+        self.block_decls.push(vreg);
         vreg
     }
 

@@ -1,15 +1,16 @@
 use crate::ir::IR;
 
+// mod _arm;
 pub mod arm;
 
-pub struct UnfinishedCode<A: Assembler>(pub(self) A);
+pub struct LinkableCode<A: Assembler>(pub(self) A);
 
-impl<A: Assembler> UnfinishedCode<A> {
+impl<A: Assembler> LinkableCode<A> {
     pub fn size(&self) -> usize {
-        self.0.current_offset()
+        self.0.code_size()
     }
 
-    pub fn finalize(mut self, str_literal_offset: usize) -> MachineCode {
+    pub fn link(self, str_literal_offset: usize) -> MachineCode {
         self.0.into_machine_code(str_literal_offset)
     }
 }
@@ -23,9 +24,9 @@ pub struct MachineCode {
 }
 
 pub trait Assembler: Sized {
-    fn assemble(ir: IR) -> UnfinishedCode<Self>;
+    fn assemble(ir: IR) -> LinkableCode<Self>;
 
-    fn current_offset(&self) -> usize;
+    fn code_size(&self) -> usize;
 
     fn into_machine_code(self, str_literal_offset: usize) -> MachineCode;
 }

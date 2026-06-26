@@ -126,7 +126,7 @@ pub enum ExprInner {
 pub enum ArithmeticOp {
     Add,
     Sub,
-    Mult,
+    Mul,
     Div,
 }
 

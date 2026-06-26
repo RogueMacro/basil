@@ -325,6 +325,75 @@ impl Parser {
         Ok(Statement::WhileLoop { guard, body })
     }
 
+    fn _parse_expr(&mut self) -> Result<Expression, Error> {
+        let lhs = self.parse_addsub()?;
+        Ok(lhs)
+    }
+
+    fn parse_addsub(&mut self) -> Result<Expression, Error> {
+        let lhs = self.parse_muldiv()?;
+        match self.lexer.current() {
+            Some((Token::Operator(op @ (Operator::Plus | Operator::Minus)), _)) => {
+                let op = op.as_arithmetic().unwrap();
+                self.lexer.lex_one()?;
+
+                let rhs = self.parse_addsub()?;
+                let span = self.span(lhs.span.1.start..rhs.span.1.end);
+
+                Ok(Expression {
+                    inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
+                    span,
+                })
+            }
+            _ => Ok(lhs),
+        }
+    }
+
+    fn parse_muldiv(&mut self) -> Result<Expression, Error> {
+        let lhs = self.parse_term()?;
+        match self.lexer.current() {
+            Some((Token::Operator(op @ (Operator::Star | Operator::Slash)), _)) => {
+                let op = op.as_arithmetic().unwrap();
+                self.lexer.lex_one()?;
+
+                let rhs = self.parse_muldiv()?;
+                let span = self.span(lhs.span.1.start..rhs.span.1.end);
+
+                Ok(Expression {
+                    inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
+                    span,
+                })
+            }
+            _ => Ok(lhs),
+        }
+    }
+
+    fn parse_term(&mut self) -> Result<Expression, Error> {
+        let (token, range) = self.expect_take_current()?;
+        let span = self.span(range.clone());
+        let expr = match token {
+            Token::Number(num) => Expression {
+                inner: ExprInner::Const(num),
+                span,
+            },
+            Token::LeftParenthesis => {
+                let expr = self.parse_expr()?;
+                self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
+                expr
+            }
+            Token::Ident(ident) => self.parse_ident_expr(ident, range)?,
+            _ => {
+                return Err(self
+                    .err_ctx
+                    .unexpected_token(span.clone(), "unexpected term")
+                    .with_label(span, "expected value, identifier or parenthesis")
+                    .finish());
+            }
+        };
+
+        Ok(expr)
+    }
+
     fn parse_expr(&mut self) -> Result<Expression, Error> {
         let mut lhs = self.parse_single_expr()?;
 
@@ -378,7 +447,7 @@ impl Parser {
                 ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Sub, None)
             }
             Operator::Star => {
-                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Mult, None)
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Mul, None)
             }
             Operator::Slash => {
                 ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Div, None)
@@ -595,5 +664,295 @@ impl Parser {
     fn span_eof(&self) -> (Rc<PathBuf>, Range<usize>) {
         let end = self.lexer.cur_token_start();
         self.span((end - 1)..end)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mod_main() -> Rc<PathBuf> {
+        Rc::new(PathBuf::from("main"))
+    }
+
+    fn get_parser(src: &str) -> Parser {
+        let lexer = Lexer::new(mod_main(), src).unwrap();
+        Parser::new(mod_main(), lexer)
+    }
+
+    #[test]
+    fn expr_addsub() {
+        let ast = get_parser("2 + 3 - 4").parse_expr().unwrap();
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(2),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Const(3),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(4),
+                                ..
+                            }),
+                            ArithmeticOp::Sub,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Add,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_muldiv() {
+        let ast = get_parser("2 * 3 / 4").parse_expr().unwrap();
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(2),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Const(3),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(4),
+                                ..
+                            }),
+                            ArithmeticOp::Div,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Mul,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_precedence_add_mul() {
+        let ast = get_parser("2 + 3 * 4").parse_expr().unwrap();
+        eprintln!("{:#?}", ast);
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(2),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Const(3),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(4),
+                                ..
+                            }),
+                            ArithmeticOp::Mul,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Add,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_precedence_mul_add() {
+        let ast = get_parser("2 * 3 + 4").parse_expr().unwrap();
+        eprintln!("{:#?}", ast);
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Const(2),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(3),
+                                ..
+                            }),
+                            ArithmeticOp::Mul,
+                            _
+                        ),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Const(4),
+                        ..
+                    }),
+                    ArithmeticOp::Add,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_parenthesis() {
+        let ast = get_parser("2 * (3 + 4)").parse_expr().unwrap();
+        eprintln!("{:#?}", ast);
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(2),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Const(3),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(4),
+                                ..
+                            }),
+                            ArithmeticOp::Add,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Mul,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_combo() {
+        let ast = get_parser("1 + 2 * 3 - (4 + 5) / 6").parse_expr().unwrap();
+        eprintln!("{:#?}", ast);
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(1),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Arithmetic(
+                                    deref!(Expression {
+                                        inner: ExprInner::Const(2),
+                                        ..
+                                    }),
+                                    deref!(Expression {
+                                        inner: ExprInner::Const(3),
+                                        ..
+                                    }),
+                                    ArithmeticOp::Mul,
+                                    _
+                                ),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Arithmetic(
+                                    deref!(Expression {
+                                        inner: ExprInner::Arithmetic(
+                                            deref!(Expression {
+                                                inner: ExprInner::Const(4),
+                                                ..
+                                            }),
+                                            deref!(Expression {
+                                                inner: ExprInner::Const(5),
+                                                ..
+                                            }),
+                                            ArithmeticOp::Add,
+                                            _
+                                        ),
+                                        ..
+                                    }),
+                                    deref!(Expression {
+                                        inner: ExprInner::Const(6),
+                                        ..
+                                    }),
+                                    ArithmeticOp::Div,
+                                    _
+                                ),
+                                ..
+                            }),
+                            ArithmeticOp::Sub,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Add,
+                    _
+                ),
+                ..
+            }
+        ));
+    }
+
+    #[test]
+    fn expr_ident() {
+        let ast = get_parser("2 + pi * 4").parse_expr().unwrap();
+        eprintln!("{:#?}", ast);
+        assert!(matches!(
+            ast,
+            Expression {
+                inner: ExprInner::Arithmetic(
+                    deref!(Expression {
+                        inner: ExprInner::Const(2),
+                        ..
+                    }),
+                    deref!(Expression {
+                        inner: ExprInner::Arithmetic(
+                            deref!(Expression {
+                                inner: ExprInner::Variable("pi"),
+                                ..
+                            }),
+                            deref!(Expression {
+                                inner: ExprInner::Const(4),
+                                ..
+                            }),
+                            ArithmeticOp::Mul,
+                            _
+                        ),
+                        ..
+                    }),
+                    ArithmeticOp::Add,
+                    _
+                ),
+                ..
+            }
+        ));
     }
 }

@@ -1,0 +1,10 @@
+expr ::= muldiv
+muldiv ::= addsub | addsub "*" muldiv | addsub "/" muldiv
+addsub ::= term | term "+" addsub | term "-" addsub
+term ::= "(" expr ")" | number | ident
+
+func ::= "fn" ident "(" ")" block
+block ::= "{" statements "}"
+statements ::= statement | statement statements
+
+statement ::= expr

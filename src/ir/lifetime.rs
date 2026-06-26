@@ -172,15 +172,13 @@ impl super::BasicBlock {
     pub fn lifetimes(&self) -> HashMap<VirtualReg, Lifetime> {
         let mut lifetimes: HashMap<VirtualReg, Lifetime> = HashMap::new();
         let mut active: Vec<(VirtualReg, Interval)> = Vec::new();
-        let mut uses = Vec::new();
 
         for (i, op) in self.ops.iter().enumerate() {
-            uses.clear();
-            op._vregs_used(&mut uses);
+            let (mut uses, dest) = op.vregs_used();
 
             active.retain_mut(|(vreg, interval)| {
-                if let Some(u) = uses.iter().position(|r| r == vreg) {
-                    uses.swap_remove(u);
+                if let Some(u) = uses.get(vreg).copied() {
+                    uses.remove(&u);
                     interval.range.end = i + 1;
 
                     true
@@ -193,7 +191,7 @@ impl super::BasicBlock {
             });
 
             // existing uses removed in previous step
-            for vreg in &uses {
+            for vreg in uses.iter().chain(dest.iter()) {
                 let interval = Interval {
                     range: i..(i + 1),
                     register: None,
