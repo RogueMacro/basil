@@ -1,6 +1,11 @@
-use crate::analyze::{
-    Span,
-    semantics::{SemanticType, Sign},
+use std::fmt::Debug;
+
+use crate::{
+    analyze::{
+        Span,
+        semantics::{SemanticType, Sign},
+    },
+    ir::VarSize,
 };
 
 pub mod parse;
@@ -86,18 +91,18 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum Assignable {
     Var(String),
-    Ptr(String),
+    Ptr(String, Option<VarSize>),
 }
 
 impl Assignable {
     pub fn symbol(&self) -> &str {
         match self {
-            Self::Var(var) | Self::Ptr(var) => var,
+            Self::Var(var) | Self::Ptr(var, _) => var,
         }
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Clone)]
 pub struct Expression {
     pub inner: ExprInner,
     pub span: Span,
@@ -105,7 +110,7 @@ pub struct Expression {
 
 #[derive(Debug, Clone)]
 pub enum ExprInner {
-    Const(i64),
+    Const(u64),
     Character(char),
     String(String),
     Bool(bool),
@@ -116,6 +121,8 @@ pub enum ExprInner {
 
     Arithmetic(Box<Expression>, Box<Expression>, ArithmeticOp, Option<Sign>),
     Comparison(Box<Expression>, Box<Expression>, CompareOp, Option<Sign>),
+    Logical(Box<Expression>, Box<Expression>, LogicalOp),
+    Negate(Box<Expression>),
 
     Cast(Box<Expression>, SemanticType),
 
@@ -138,4 +145,16 @@ pub enum CompareOp {
     LessOrEqual,
     Greater,
     GreaterOrEqual,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum LogicalOp {
+    And,
+    Or,
+}
+
+impl Debug for Expression {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        Debug::fmt(&self.inner, f)
+    }
 }

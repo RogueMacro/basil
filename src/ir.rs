@@ -156,6 +156,7 @@ pub enum Operation {
     StorePointer {
         src: VirtualReg,
         ptr: VirtualReg,
+        size: VarSize,
     },
     Add {
         a: VirtualReg,
@@ -177,10 +178,20 @@ pub enum Operation {
         b: VirtualReg,
         dest: VirtualReg,
     },
+    Negate {
+        val: VirtualReg,
+        dest: VirtualReg,
+    },
     Compare {
         a: VirtualReg,
         b: VirtualReg,
         cond: Condition,
+        dest: VirtualReg,
+    },
+    Select {
+        a: u32,
+        b: u32,
+        cond: VirtualReg,
         dest: VirtualReg,
     },
     Call {
@@ -228,7 +239,7 @@ impl Operation {
                 push(Some(*ptr));
                 assigned = Some(*dest);
             }
-            Operation::StorePointer { src, ptr } => {
+            Operation::StorePointer { src, ptr, size: _ } => {
                 push(Some(*src));
                 push(Some(*ptr));
             }
@@ -242,6 +253,11 @@ impl Operation {
                 assigned = Some(*dest);
             }
 
+            Operation::Negate { val, dest } => {
+                push(Some(*val));
+                assigned = Some(*dest);
+            }
+
             Operation::Compare {
                 a,
                 b,
@@ -250,6 +266,16 @@ impl Operation {
             } => {
                 push(Some(*a));
                 push(Some(*b));
+                assigned = Some(*dest);
+            }
+
+            Operation::Select {
+                a: _,
+                b: _,
+                cond,
+                dest,
+            } => {
+                push(Some(*cond));
                 assigned = Some(*dest);
             }
 
@@ -333,7 +359,7 @@ impl Condition {
 /// register.
 #[derive(Debug, Clone, Copy, PartialEq)]
 pub enum SourceVal {
-    Immediate(i64),
+    Immediate(u64),
     VReg(VirtualReg),
     String(StrId),
 }
@@ -445,8 +471,8 @@ impl fmt::Display for IR {
                         Operation::LoadPointer { ptr, size, dest } => {
                             writeln!(f, "    {} = deref {:?} {}", dest, size, ptr)?
                         }
-                        Operation::StorePointer { src, ptr } => {
-                            writeln!(f, "    deref {} = {}", ptr, src)?
+                        Operation::StorePointer { src, ptr, size } => {
+                            writeln!(f, "    deref {} = {} ({:?})", ptr, src, size)?
                         }
 
                         Operation::Add { a, b, dest } => {
@@ -461,8 +487,16 @@ impl fmt::Display for IR {
                         Operation::Divide { a, b, dest } => {
                             writeln!(f, "    {} = {} / {}", dest, a, b)?
                         }
+
+                        Operation::Negate { val, dest } => {
+                            writeln!(f, "    {} = neg {}", dest, val)?
+                        }
+
                         Operation::Compare { a, b, cond, dest } => {
                             writeln!(f, "    {} = cmp {} {:?} {}", dest, a, cond, b)?
+                        }
+                        Operation::Select { a, b, cond, dest } => {
+                            writeln!(f, "    {} = select {} ? {} : {}", dest, cond, a, b)?
                         }
                         Operation::Call {
                             function,

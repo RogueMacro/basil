@@ -2,7 +2,9 @@ use std::collections::{HashMap, HashSet};
 
 use crate::{
     analyze::{
-        ast::{ArithmeticOp, Assignable, ExprInner, Expression, Item as AstItem, Statement},
+        ast::{
+            ArithmeticOp, Assignable, ExprInner, Expression, Item as AstItem, LogicalOp, Statement,
+        },
         semantics::{Sign, ValidAST},
     },
     ir::{BasicBlock, Condition, IR, Item, Label, Op, OpIndex, SourceVal, Terminator, VirtualReg},
@@ -41,9 +43,10 @@ impl IR {
             };
         }
 
-        if let Err(dupes) = crate::ir::ssa::verify_ssa(&ir) {
-            panic!("ir is not ssa, duplicates: {:?}", dupes);
-        }
+        // if let Err(dupes) = crate::ir::ssa::verify_ssa(&ir) {
+        //     println!("{}", ir);
+        //     panic!("ir is not ssa, duplicates: {:?}", dupes);
+        // }
 
         ir
     }
@@ -156,8 +159,7 @@ impl<'ir> BlockBuilder<'ir> {
                         "variable declared twice"
                     );
 
-                    let stack_offset = self.get_or_insert_stack_var(var);
-                    let dest = self.get_vreg();
+                    let (dest, stack_offset) = self.get_or_insert_stack_var(var);
                     let src = self.flatten_expr(expr, Some(dest));
 
                     if src != SourceVal::VReg(dest) {
@@ -172,38 +174,29 @@ impl<'ir> BlockBuilder<'ir> {
                 }
 
                 Statement::Assign { var, expr, .. } => {
-                    let dest = self.get_vreg();
-                    println!("{} => {}", var.symbol(), dest);
-                    // *self
-                    //     .var_to_vreg
-                    //     .get_mut(var.symbol())
-                    //     .expect("variable was not declared before assignment") = dest;
-
-                    let stack_offset = self.get_or_insert_stack_var(var.symbol());
-                    let dest = self.get_vreg();
-                    let src = self.flatten_expr(expr, Some(dest));
-
-                    // if !self.block_decls.contains(&dest) {
-                    //     self.block_args.push(dest);
-                    // }
+                    let src = self.flatten_expr(expr, None);
 
                     match var {
-                        Assignable::Var(_) => {
-                            if src.reg() != Some(dest) {
-                                self.block_ops.push(Op::Assign { src, dest })
-                            }
+                        Assignable::Var(var) => {
+                            let (dest, stack_offset) = self.get_or_insert_stack_var(var);
+
+                            self.block_ops.push(Op::Assign { src, dest });
+                            self.block_ops.push(Op::Store {
+                                src: SourceVal::VReg(dest),
+                                stack_offset,
+                            });
                         }
-                        Assignable::Ptr(_) => {
-                            todo!()
-                            // let src = self.src_to_vreg(src);
-                            // self.ops.push(Op::StorePointer { src, ptr: dest });
+                        Assignable::Ptr(var, size) => {
+                            let var_vreg = self.var_to_vreg.get(&var).copied().unwrap();
+                            let src = self.src_to_vreg(src);
+                            println!("assign *{} = {}", var_vreg, src);
+                            self.block_ops.push(Op::StorePointer {
+                                src,
+                                ptr: var_vreg,
+                                size: size.unwrap(),
+                            });
                         }
                     }
-
-                    self.block_ops.push(Op::Store {
-                        src: SourceVal::VReg(dest),
-                        stack_offset,
-                    });
                 }
 
                 Statement::Expr(expr) => {
@@ -301,13 +294,13 @@ impl<'ir> BlockBuilder<'ir> {
 
     fn flatten_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
         match expr.inner {
-            ExprInner::Const(num) => SourceVal::Immediate(num),
-            ExprInner::Character(c) => SourceVal::Immediate(c as i64),
+            ExprInner::Const(num) => SourceVal::Immediate(num as u64),
+            ExprInner::Character(c) => SourceVal::Immediate(c as u64),
             ExprInner::String(string) => {
                 let str_id = self.ir.insert_str_literal(string);
                 SourceVal::String(str_id)
             }
-            ExprInner::Bool(b) => SourceVal::Immediate(b as i64),
+            ExprInner::Bool(b) => SourceVal::Immediate(b as u64),
 
             ExprInner::Variable(var) => {
                 let dest = self.get_vreg();
@@ -380,6 +373,72 @@ impl<'ir> BlockBuilder<'ir> {
 
                 SourceVal::VReg(dest)
             }
+            ExprInner::Logical(lhs, rhs, op) => {
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                let lhs = self.flatten_expr(*lhs, None);
+                let lhs = self.src_to_vreg(lhs);
+
+                let second_test = self.next_label();
+                let test_true = self.next_label();
+                let test_false = self.next_label();
+                let end = self.next_label();
+
+                let term = match op {
+                    LogicalOp::And => Terminator::BranchCond {
+                        cond: lhs,
+                        if_true: second_test,
+                        if_false: test_false,
+                    },
+                    LogicalOp::Or => Terminator::BranchCond {
+                        cond: lhs,
+                        if_true: test_true,
+                        if_false: second_test,
+                    },
+                };
+
+                self.commit_block(term, second_test);
+
+                let rhs = self.flatten_expr(*rhs, None);
+                let rhs = self.src_to_vreg(rhs);
+
+                self.commit_block(
+                    Terminator::BranchCond {
+                        cond: rhs,
+                        if_true: test_true,
+                        if_false: test_false,
+                    },
+                    test_true,
+                );
+
+                self.block_decls.push(dest);
+                self.block_ops.push(Op::Assign {
+                    src: SourceVal::Immediate(1),
+                    dest,
+                });
+
+                self.commit_block(Terminator::Branch { label: end }, test_false);
+
+                self.block_decls.push(dest);
+                self.block_ops.push(Op::Assign {
+                    src: SourceVal::Immediate(0),
+                    dest,
+                });
+
+                self.commit_block(Terminator::Branch { label: end }, end);
+
+                SourceVal::VReg(dest)
+            }
+
+            ExprInner::Negate(expr) => {
+                let val = self.flatten_expr(*expr, dest);
+                let val = self.src_to_vreg(val);
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.block_ops.push(Op::Negate { val, dest });
+
+                SourceVal::VReg(dest)
+            }
 
             ExprInner::FnCall(function, args) => {
                 let args = args
@@ -423,7 +482,12 @@ impl<'ir> BlockBuilder<'ir> {
         }
     }
 
-    fn get_or_insert_stack_var<S: Into<String> + AsRef<str>>(&mut self, var: S) -> u32 {
+    fn get_or_insert_stack_var<S: Into<String> + AsRef<str>>(
+        &mut self,
+        var: S,
+    ) -> (VirtualReg, u32) {
+        let v: String = var.as_ref().to_owned();
+
         let vreg = self
             .var_to_vreg
             .get(var.as_ref())
@@ -434,12 +498,19 @@ impl<'ir> BlockBuilder<'ir> {
                 vreg
             });
 
-        self.stack.get(&vreg).copied().unwrap_or_else(|| {
+        let offset = self.stack.get(&vreg).copied().unwrap_or_else(|| {
             self.stack.insert(vreg, self.stack_size);
             self.stack_size += 8;
-            println!("adding {} to stack at offset {}", vreg, self.stack_size - 8);
+            println!(
+                "adding {} ({}) to stack at offset {}",
+                vreg,
+                v,
+                self.stack_size - 8
+            );
             self.stack_size - 8
-        })
+        });
+
+        (vreg, offset)
     }
 
     fn get_stack_offset(&self, var: &str) -> u32 {

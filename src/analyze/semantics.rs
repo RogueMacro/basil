@@ -210,7 +210,14 @@ impl Analyzer {
                 let assign_type = self.expression(expr);
                 let decl_type = match var {
                     Assignable::Var(var) => self.check_var(var, var_span),
-                    Assignable::Ptr(ptr) => self.check_ptr(ptr, var_span),
+                    Assignable::Ptr(ptr, size) => {
+                        let typ = self.check_ptr(ptr, var_span);
+                        if let Some(typ) = typ.as_ref() {
+                            *size = Some(typ.size());
+                        }
+
+                        typ
+                    }
                 };
 
                 if let Some(assign_type) = assign_type
@@ -359,6 +366,47 @@ impl Analyzer {
                 }
 
                 None
+            }
+
+            ExprInner::Logical(lhs, rhs, _) => {
+                if self
+                    .expression(lhs)
+                    .is_some_and(|t| t != SemanticType::Bool)
+                {
+                    self.err_ctx
+                        .error(lhs.span.clone())
+                        .with_message("expected bool for logical operation")
+                        .with_label(lhs.span.clone(), "expected bool")
+                        .report();
+                }
+
+                if self
+                    .expression(rhs)
+                    .is_some_and(|t| t != SemanticType::Bool)
+                {
+                    self.err_ctx
+                        .error(rhs.span.clone())
+                        .with_message("expected bool for logical operation")
+                        .with_label(rhs.span.clone(), "expected bool")
+                        .report();
+                }
+
+                Some(SemanticType::Bool)
+            }
+
+            ExprInner::Negate(expr) => {
+                if self
+                    .expression(expr)
+                    .is_some_and(|t| t != SemanticType::Bool)
+                {
+                    self.err_ctx
+                        .error(expr.span.clone())
+                        .with_message("cannot negate non-boolean value")
+                        .with_label(expr.span.clone(), "expected bool")
+                        .report();
+                }
+
+                Some(SemanticType::Bool)
             }
 
             ExprInner::Cast(expr, cast_to) => {
@@ -521,7 +569,11 @@ impl SemanticType {
 
         matches!(
             (self, other),
-            (Char, I64) | (I64, Char) | (Pointer(_), I64) | (I64, Pointer(_))
+            (Char, I64)
+                | (I64, Char)
+                | (Pointer(_), I64)
+                | (I64, Pointer(_))
+                | (Pointer(_), Pointer(_))
         )
     }
 }

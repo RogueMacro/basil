@@ -17,7 +17,7 @@ const PREFIX: &str = "std::";
 const PAGE_SIZE: u64 = 16384;
 
 pub fn assemble(asm: &mut ArmAssembler) {
-    let builtins: &[(&str, BuiltinFn)] = &[("exit", exit), ("write", write)];
+    let builtins: &[(&str, BuiltinFn)] = &[("exit", exit), ("write", write), ("mmap", mmap)];
 
     for (name, assemble_fn) in builtins {
         let offset_in_bytes = asm.code_size();
@@ -44,6 +44,17 @@ pub fn write(asm: &mut ArmAssembler) {
     load_arg(asm, 1, Reg::X1);
     load_arg(asm, 2, Reg::X2);
     syscall(asm, SyscallType::Write);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+pub fn mmap(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    load_arg(asm, 1, Reg::X1);
+    load_arg(asm, 2, Reg::X2);
+    load_arg(asm, 3, Reg::X3);
+    load_arg(asm, 4, Reg::X4);
+    load_arg(asm, 5, Reg::X5);
+    syscall(asm, SyscallType::MMap);
     asm.emit(Inst::Ret { value: Reg::X0 });
 }
 

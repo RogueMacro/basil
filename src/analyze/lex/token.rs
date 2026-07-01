@@ -4,7 +4,7 @@ use crate::analyze::ast::ArithmeticOp;
 pub enum Token {
     Keyword(Keyword),
 
-    Number(i64),
+    Number(u64),
     Character(char),
     String(String),
     Bool(bool),
@@ -67,6 +67,11 @@ pub enum Operator {
     Minus,
     Star,
     Slash,
+
+    Not,
+
+    And,
+    Or,
 }
 
 impl Operator {
@@ -76,6 +81,10 @@ impl Operator {
             ('!', Some('=')) => (Self::NotEqual, true),
             ('<', Some('=')) => (Self::LessOrEqual, true),
             ('>', Some('=')) => (Self::GreaterOrEqual, true),
+
+            ('&', Some('&')) => (Self::And, true),
+            ('|', Some('|')) => (Self::Or, true),
+
             ('<', _) => (Self::Less, false),
             ('>', _) => (Self::Greater, false),
 
@@ -83,6 +92,8 @@ impl Operator {
             ('-', _) => (Self::Minus, false),
             ('*', _) => (Self::Star, false),
             ('/', _) => (Self::Slash, false),
+
+            ('!', _) => (Self::Not, false),
 
             _ => return None,
         };
@@ -94,9 +105,12 @@ impl Operator {
         use Operator::*;
 
         match self {
-            Equal | NotEqual | Less | LessOrEqual | Greater | GreaterOrEqual => 0,
-            Plus | Minus => 1,
-            Star | Slash => 2,
+            Or => 0,
+            And => 1,
+            Equal | NotEqual | Less | LessOrEqual | Greater | GreaterOrEqual => 2,
+            Plus | Minus => 3,
+            Star | Slash => 4,
+            Not => 5,
         }
     }
 

@@ -281,7 +281,7 @@ impl Lexer {
             self.index += 1;
         }
 
-        let num: i64 = string.parse().unwrap();
+        let num: u64 = string.parse().unwrap();
         (Token::Number(num), start..self.index)
     }
 

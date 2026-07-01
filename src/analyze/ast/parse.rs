@@ -3,8 +3,8 @@ use std::{ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, ErrorVec, Span,
     ast::{
-        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, Item, SemanticType,
-        Statement,
+        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, Item, LogicalOp,
+        SemanticType, Statement,
     },
     lex::{
         Lexer,
@@ -39,6 +39,8 @@ impl Parser {
         if !errors.is_empty() {
             return Err(errors);
         }
+
+        // println!("{:#?}", ast);
 
         Ok(ast)
     }
@@ -153,6 +155,10 @@ impl Parser {
         } else {
             let body = self.parse_block()?;
 
+            if name == "main" {
+                println!("{:#?}", body);
+            }
+
             Ok(Item::Function {
                 name,
                 args,
@@ -246,7 +252,7 @@ impl Parser {
                 Some((Token::Assign, _)) => {
                     let var = match expr.inner {
                         ExprInner::Variable(var) => Assignable::Var(var),
-                        ExprInner::Deref(var, None) => Assignable::Ptr(var),
+                        ExprInner::Deref(var, None) => Assignable::Ptr(var, None),
                         _ => {
                             return Err(self
                                 .err_ctx
@@ -473,11 +479,17 @@ impl Parser {
                 CompareOp::GreaterOrEqual,
                 None,
             ),
+            Operator::And => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::And),
+            Operator::Or => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::Or),
+
+            Operator::Not => unreachable!(),
         }
     }
 
     fn parse_single_expr(&mut self) -> Result<Expression, Error> {
         let token = self.expect_take_current()?;
+
+        // BUG: the largest possible 64-bit unsigned integer doesnt work.
         let expr = match token {
             (Token::Number(num), range) => Expression {
                 inner: ExprInner::Const(num),
@@ -517,6 +529,14 @@ impl Parser {
                     span: self.span(deref_range.start..var_range.end),
                 }
             }
+            (Token::Operator(Operator::Not), range) => {
+                let expr = self.parse_single_expr()?;
+
+                Expression {
+                    inner: ExprInner::Negate(Box::new(expr)),
+                    span: self.span(range),
+                }
+            }
             (Token::Ident(ident), range) => self.parse_ident_expr(ident, range)?,
             (Token::Character(c), range) => Expression {
                 inner: ExprInner::Character(c),
@@ -530,6 +550,11 @@ impl Parser {
                 inner: ExprInner::Bool(b),
                 span: self.span(range),
             },
+            (Token::LeftParenthesis, _) => {
+                let expr = self.parse_expr()?;
+                self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
+                expr
+            }
             (_, range) => {
                 return Err(self
                     .err_ctx

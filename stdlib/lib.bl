@@ -6,20 +6,6 @@
 //    return std::write(1, 0, 0);
 //}
 
-fn test(stdout: i64, str: &char, len: i64) -> i64 {
-    return stdout;
-}
-
-fn test_2(str: &char) -> i64 {
-    return std::test(1, str, std::strlen(str));
-}
-
-fn test_p() {
-    str := "test_p\n";
-    len := std::strlen(str);
-    std::write(1, str, len);
-}
-
 fn print(buf: &char) {
     std::write(1, buf, std::strlen(buf));
 }
@@ -46,14 +32,6 @@ fn strlen(buf: &char) -> i64 {
   return end - start;
 }
 
-fn printnumln(buf: &char, n: i64) {
-    n = n + 48;
-    c := n as char;
-    std::print(buf);
-    std::printc(c);
-    std::print("\n");
-}
-
 fn mod(dividend: i64, divisor: i64) -> i64 {
     n := dividend / divisor;
     return dividend - n * divisor;
@@ -63,5 +41,9 @@ fn write(fd: i64, buf: &char, count: i64) -> i64;
 
 fn exit(status: i64);
 
-fn _mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64);
+fn mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64) -> &i64;
+
+fn alloc(bytes: i64) -> &i64 {
+  return std::mmap(0 as &(), bytes, 3, 4098, 0-1, 0);
+}
 

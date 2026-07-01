@@ -2,7 +2,7 @@
 
 use std::collections::HashMap;
 
-use ux::{i6, i7, i12, i19, i21, i26, u9, u12};
+use ux::{i5, i6, i7, i12, i19, i21, i26, u9, u12};
 
 use crate::ir::{Condition, Label, Terminator, VirtualReg};
 
@@ -155,7 +155,7 @@ impl PageAddr {
 
 #[derive(Debug, Clone, Copy)]
 pub enum AddImmVal {
-    Fixed(i12),
+    Fixed(u12),
     String(usize),
 }
 
@@ -165,13 +165,19 @@ impl AddImmVal {
             AddImmVal::Fixed(_) => (),
             AddImmVal::String(rel_offset) => {
                 let abs_offset = str_table_offset + *rel_offset;
-                let addr_in_page = i12::new((abs_offset % 4096) as i16);
+                println!(
+                    "abs offset: {} % 4096 = {}  (max: {})",
+                    abs_offset,
+                    abs_offset % 4096,
+                    u12::MAX
+                );
+                let addr_in_page = u12::new((abs_offset % 4096) as u16);
                 *self = AddImmVal::Fixed(addr_in_page);
             }
         }
     }
 
-    pub fn get(&self) -> i12 {
+    pub fn get(&self) -> u12 {
         match self {
             AddImmVal::Fixed(imm) => *imm,
             _ => panic!("immediate value address was not linked before encoding"),
@@ -201,6 +207,15 @@ impl EitherReg {
             panic!("register was not allocated")
         }
     }
+}
+
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum StoreSize {
+    Byte = 0,
+    Halfword = 1,
+    Word = 2,
+    Doubleword = 3,
 }
 
 #[derive(Debug, Clone)]
@@ -291,6 +306,18 @@ pub enum Inst<R> {
         b: R,
     },
 
+    /// CMP instruction (immediate) (alias of SUBS).
+    CmpImm {
+        val: R,
+        imm: i12,
+    },
+
+    /// Conditional set (alias of CSINC).
+    Cset {
+        inv_cond: Condition,
+        dest: R,
+    },
+
     /// SDIV or UDIV instruction.
     ///
     /// - Rn: first source register
@@ -350,9 +377,22 @@ pub enum Inst<R> {
     ///
     /// - Rm: source register
     /// - Rd: destination register
-    MovReg {
+    Mov {
         src: EitherReg,
         dest: EitherReg,
+    },
+
+    /// MOVK instruction.
+    ///
+    /// Moves a 16-bit immediate value into destination register, keeping all "non-affected" bits.
+    ///
+    /// - hw: shift left (0/16/32/48 encoded as 0/1/2/3)
+    /// - imm16: 16-bit immediate value to (optionally shift) into destination register
+    /// - Rd: destination register
+    Movk {
+        shift: ImmShift16,
+        value: u16,
+        dest: R,
     },
 
     /// MOVZ instruction.
@@ -386,6 +426,19 @@ pub enum Inst<R> {
         dest: R,
     },
 
+    /// NEG instruction. (alias of SUB)
+    ///
+    /// Encoding:
+    /// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+    /// 1  1  0  0  1  0  1  1  shift 0  Rm             imm6              1  1  1  1  1  Rd
+    ///
+    /// - Rm: value register
+    /// - Rd: destination register
+    Neg {
+        val: R,
+        dest: R,
+    },
+
     /// Return from subroutine to offset stored in link register.
     ///
     /// - Rn: register containing jump address (always set to X30/LR)
@@ -397,10 +450,6 @@ pub enum Inst<R> {
     ///
     /// Calculates an address from a base pointer/stack pointer and an offset, and saves a register
     /// value to that address.
-    ///
-    /// Encoding (register):
-    /// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
-    /// 1  1  1  1  1  0  0  0  0  0  1  Rm             1  1  1  0  1  0  Rn             Rt
     ///
     /// - Rm: offset register
     /// - Rn: base pointer
@@ -414,6 +463,7 @@ pub enum Inst<R> {
         base: EitherReg,
         /// Multiple of 8 bytes.
         offset: u12,
+        size: StoreSize,
     },
 
     /// STP instruction.
@@ -451,7 +501,7 @@ pub enum Inst<R> {
 
     SubImm {
         a: EitherReg,
-        imm: i12,
+        imm: u12,
         dest: EitherReg,
     },
 
@@ -489,12 +539,17 @@ impl Inst<VirtualReg> {
             Inst::Mul { a, b, dest } => (Some(*a), Some(*b), Some(*dest)),
             Inst::Div { a, b, dest, .. } => (Some(*a), Some(*b), Some(*dest)),
 
+            Inst::Neg { val, dest } => (Some(*val), None, Some(*dest)),
+
             Inst::Cmp { a, b } => (Some(*a), Some(*b), None),
+            Inst::CmpImm { val, imm: _ } => (Some(*val), None, None),
+            Inst::Cset { inv_cond: _, dest } => (None, None, Some(*dest)),
 
             Inst::Adrp { dest, .. } => (None, None, Some(*dest)),
             Inst::Load { base, dest, .. } => (base.to_virtual(), None, Some(*dest)),
             Inst::LoadByte { base, dest, .. } => (Some(*base), None, Some(*dest)),
-            Inst::MovReg { src, dest } => (src.to_virtual(), None, dest.to_virtual()),
+            Inst::Mov { src, dest } => (src.to_virtual(), None, dest.to_virtual()),
+            Inst::Movk { dest, .. } => (None, None, Some(*dest)),
             Inst::Movz { dest, .. } => (None, None, Some(*dest)),
             Inst::Store { source, base, .. } => (Some(*source), base.to_virtual(), None),
 
@@ -556,9 +611,22 @@ impl Inst<VirtualReg> {
                 signed,
             },
 
+            Inst::Neg { .. } => Inst::Neg {
+                val: regs.0.unwrap(),
+                dest: regs.2.unwrap(),
+            },
+
             Inst::Cmp { .. } => Inst::Cmp {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
+            },
+            Inst::CmpImm { imm, .. } => Inst::CmpImm {
+                val: regs.0.unwrap(),
+                imm,
+            },
+            Inst::Cset { inv_cond, .. } => Inst::Cset {
+                inv_cond,
+                dest: regs.2.unwrap(),
             },
 
             Inst::Adrp { page_addr, .. } => Inst::Adrp {
@@ -575,21 +643,28 @@ impl Inst<VirtualReg> {
                 offset,
                 dest: regs.2.unwrap(),
             },
-            Inst::MovReg { dest, src } => Inst::MovReg {
+            Inst::Mov { dest, src } => Inst::Mov {
                 src: regs.0.map(EitherReg::Phys).unwrap_or(src),
                 dest: regs.2.map(EitherReg::Phys).unwrap_or(dest),
+            },
+            Inst::Movk { shift, value, .. } => Inst::Movk {
+                shift,
+                value,
+                dest: regs.2.unwrap(),
             },
             Inst::Movz { shift, value, .. } => Inst::Movz {
                 shift,
                 value,
                 dest: regs.2.unwrap(),
             },
-            Inst::Store { offset, base, .. } => Inst::Store {
+            Inst::Store {
+                offset, base, size, ..
+            } => Inst::Store {
                 source: regs.0.unwrap(),
                 base: regs.1.map(EitherReg::Phys).unwrap_or(base),
                 offset,
+                size,
             },
-
             Inst::StorePair { base, offset, .. } => Inst::StorePair {
                 base,
                 first: regs.0.unwrap(),
@@ -669,10 +744,10 @@ impl Inst<Register> {
 
             Inst::AddImm { a, imm, dest } => {
                 let a = a.expect_phys() as u32;
-                let imm: i32 = imm.get().into();
+                let imm: u32 = imm.get().into();
                 let dest = dest.expect_phys() as u32;
 
-                (0b1001000100 << 22) | ((imm as u32) << 10) | (a << 5) | dest
+                (0b1001000100 << 22) | (imm << 10) | (a << 5) | dest
             }
 
             // Encoding:
@@ -737,7 +812,7 @@ impl Inst<Register> {
                 (0b10110100 << 24) | (addr << 5) | reg
             }
 
-            // Cmp Encoding:
+            // Encoding:
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
             // 1  1  1  0  1  0  1  1  shift 0  Rm             imm6              Rn             1  1  1  1  1
             Inst::Cmp { a, b } => {
@@ -745,6 +820,27 @@ impl Inst<Register> {
                 let b = b as u32;
 
                 (0b11101011_00_0 << 21) | (b << 16) | (a << 5) | 0b11111
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  1  1  1  0  0  0  1  0  sh imm12                               Rn             1  1  1  1  1
+            Inst::CmpImm { val, imm } => {
+                let val = val as u32;
+                let imm = i32_to_u32(imm, 12);
+
+                (0b111100010_0 << 22) | (imm << 10) | (val << 5) | 0b11111
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  0  0  1  1  0  1  0  1  0  0  1  1  1  1  1  cond        0  1  1  1  1  1  1  Rd
+            Inst::Cset { inv_cond, dest } => {
+                let cond = cond_to_u32(inv_cond);
+                println!("COND: {}", cond);
+                let dest = dest as u32;
+
+                (0b1001101010011111_0000_0111111 << 5) | (cond << 12) | dest
             }
 
             // Encoding (SDIV):
@@ -811,7 +907,7 @@ impl Inst<Register> {
             // Encoding (to/from SP):
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
             // 1  0  0  1  0  0  0  1  0  0  0  0  0  0  0  0  0  0  0  0  0  0  Rn             Rd
-            Inst::MovReg { src, dest } => {
+            Inst::Mov { src, dest } => {
                 let src = src.expect_phys();
                 let src_u32 = src as u32;
                 let dest = dest.expect_phys();
@@ -822,6 +918,13 @@ impl Inst<Register> {
                 } else {
                     (0b10101010000_00000_00000011111 << 5) | (src_u32 << 16) | dest_u32
                 }
+            }
+
+            // Movk Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  1  1  1  0  0  1  0  1  hw    imm16                                           Rd
+            Inst::Movk { shift, value, dest } => {
+                (0b111100101 << 23) | ((shift as u32) << 21) | ((value as u32) << 5) | dest as u32
             }
 
             // Movz Encoding:
@@ -842,6 +945,14 @@ impl Inst<Register> {
                 (0b10011011000_00000_011111 << 10) | (a << 16) | (b << 5) | dest
             }
 
+            Inst::Neg { .. } => todo!(),
+            // Inst::Neg { val, dest } => Inst::Sub {
+            //     a: Register::SP,
+            //     b: val,
+            //     dest,
+            // }
+            // .encode(),
+
             // Encoding:
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
             // 1  1  0  1  0  1  1  0  0  1  0  1  1  1  1  1  0  0  0  0  0  0  Rn             0  0  0  0  0
@@ -853,26 +964,19 @@ impl Inst<Register> {
 
             // Encoding (immediate, unsigned offset):
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
-            // 1  1  1  1  1  0  0  1  0  0  imm12                               Rn             Rt
+            // size  1  1  1  0  0  1  0  0  imm12                               Rn             Rt
             Inst::Store {
                 base,
                 offset,
                 source,
+                size,
             } => {
                 let base = base.expect_phys() as u32;
                 let source = source as u32;
                 let imm: u32 = offset.into();
-                (0b1111100100 << 22) | (imm << 10) | (base << 5) | source
+                let size = size as u32;
 
-                // match offset {
-                //     Input::Reg(reg) => {
-                //         (0b11111000001_00000_111010 << 10) | ((reg as u32) << 16) | (base << 5) | register
-                //     }
-                //     Input::Imm(imm) => {
-                //         let imm: u32 = imm.into();
-                //         (0b1111100100 << 22) | (imm << 10) | (base << 5) | register
-                //     }
-                // }
+                (size << 30) | (0b11100100 << 22) | (imm << 10) | (base << 5) | source
             }
 
             // Encoding (pre-index):
@@ -909,7 +1013,7 @@ impl Inst<Register> {
             // 1  1  0  1  0  0  0  1  0  sh imm12                               Rn             Rd
             Inst::SubImm { a, imm, dest } => {
                 let a = a.expect_phys() as u32;
-                let imm: i16 = imm.into();
+                let imm: u16 = imm.into();
                 let dest = dest.expect_phys() as u32;
 
                 (0b110100010_0 << 22) | ((imm as u32) << 10) | (a << 5) | dest

@@ -1,7 +1,7 @@
 use std::assert_matches;
 use std::collections::HashMap;
 
-use ux::{i7, i12, i19, i26, u9, u12};
+use ux::{i7, i12, i19, i26, u9, u12, u48};
 
 use crate::{
     ir::{
@@ -14,7 +14,7 @@ use crate::{
             builtin::SyscallType,
             instr::{
                 AddImmVal, BranchOffset, EitherReg, FnOffset, ImmShift16, Inst, Instruction,
-                PageAddr,
+                PageAddr, StoreSize,
             },
             reg::Register,
         },
@@ -172,12 +172,38 @@ impl ProcedureGen {
                 match op {
                     Op::Assign { src, dest } => {
                         match src {
-                            SourceVal::Immediate(imm) => proc.emit(Inst::Movz {
-                                shift: instr::ImmShift16::L0,
-                                value: imm as u16,
-                                dest,
-                            }),
-                            SourceVal::VReg(src) => proc.emit(Inst::MovReg {
+                            SourceVal::Immediate(imm) => {
+                                proc.emit(Inst::Movz {
+                                    shift: instr::ImmShift16::L0,
+                                    value: imm as u16,
+                                    dest,
+                                });
+
+                                if imm > u16::MAX as u64 {
+                                    proc.emit(Inst::Movk {
+                                        shift: ImmShift16::L16,
+                                        value: (imm >> 16) as u16,
+                                        dest,
+                                    });
+                                }
+
+                                if imm > u32::MAX as u64 {
+                                    proc.emit(Inst::Movk {
+                                        shift: ImmShift16::L32,
+                                        value: (imm >> 32) as u16,
+                                        dest,
+                                    });
+                                }
+
+                                if imm > u48::MAX.into() {
+                                    proc.emit(Inst::Movk {
+                                        shift: ImmShift16::L48,
+                                        value: (imm >> 48) as u16,
+                                        dest,
+                                    });
+                                }
+                            }
+                            SourceVal::VReg(src) => proc.emit(Inst::Mov {
                                 src: EitherReg::Virt(src),
                                 dest: EitherReg::Virt(dest),
                             }),
@@ -212,6 +238,7 @@ impl ProcedureGen {
                             source,
                             base: EitherReg::Phys(Register::SP),
                             offset: u12::new(stack_offset as u16 / 8),
+                            size: StoreSize::Doubleword,
                         });
                     }
                     Op::Load { stack_offset, dest } => {
@@ -237,13 +264,13 @@ impl ProcedureGen {
 
                         proc.emit(Inst::AddImm {
                             a: EitherReg::Phys(Register::SP),
-                            imm: AddImmVal::Fixed(i12::new(offset as i16)),
+                            imm: AddImmVal::Fixed(u12::new(offset as u16)),
                             dest: EitherReg::Virt(dest),
                         });
                     }
                     Op::AddressOfArg { offset, dest } => proc.emit(Inst::AddImm {
                         a: EitherReg::Phys(Register::FP),
-                        imm: AddImmVal::Fixed(i12::new(offset as i16)),
+                        imm: AddImmVal::Fixed(u12::new(16 + offset as u16)),
                         dest: EitherReg::Virt(dest),
                     }),
                     Op::LoadPointer { ptr, size, dest } => match size {
@@ -259,11 +286,23 @@ impl ProcedureGen {
                         }),
                         _ => todo!(),
                     },
-                    Op::StorePointer { src, ptr } => proc.emit(Inst::Store {
-                        source: src,
-                        base: EitherReg::Virt(ptr),
-                        offset: u12::new(0),
-                    }),
+                    Op::StorePointer { src, ptr, size } => {
+                        let size = match size {
+                            VarSize::Zero => todo!(),
+                            VarSize::B8 => StoreSize::Byte,
+                            VarSize::B16 => todo!(),
+                            VarSize::B32 => todo!(),
+                            VarSize::B64 => StoreSize::Doubleword,
+                        };
+
+                        proc.emit(Inst::Store {
+                            source: src,
+                            base: EitherReg::Virt(ptr),
+                            offset: u12::new(0),
+                            size,
+                        });
+                    }
+
                     Op::Add { a, b, dest } => proc.emit(Inst::Add { a, b, dest }),
                     Op::Subtract { a, b, dest } => proc.emit(Inst::Sub { a, b, dest }),
                     Op::Multiply { a, b, dest } => proc.emit(Inst::Mul { a, b, dest }),
@@ -273,28 +312,32 @@ impl ProcedureGen {
                         dest,
                         signed: true,
                     }),
+
+                    Op::Negate { val, dest } => proc.emit_many([
+                        Inst::CmpImm {
+                            val,
+                            imm: i12::new(0),
+                        },
+                        Inst::Cset {
+                            inv_cond: Condition::NotEqual,
+                            dest,
+                        },
+                    ]),
+
                     Op::Compare { a, b, cond, dest } => {
                         proc.emit_many([
                             Inst::Cmp { a, b },
-                            Inst::BranchCond {
-                                offset: BranchOffset::Fixed(3),
-                                cond,
-                            },
-                            Inst::Movz {
-                                shift: instr::ImmShift16::L0,
-                                value: 1,
-                                dest,
-                            },
-                            Inst::Branch {
-                                offset: BranchOffset::Fixed(2),
-                            },
-                            Inst::Movz {
-                                shift: instr::ImmShift16::L0,
-                                value: 0,
+                            Inst::Cset {
+                                inv_cond: cond.inverted(),
                                 dest,
                             },
                         ]);
                     }
+
+                    Op::Select { a, b, cond, dest } => {
+                        todo!()
+                    }
+
                     Op::Call {
                         function,
                         args,
@@ -305,7 +348,7 @@ impl ProcedureGen {
                         // call fn
 
                         let arg_stack_size = ((8 * args.len() as u32 + 15) >> 4) << 4;
-                        let arg_stack_size_i12 = i12::new(arg_stack_size as i16);
+                        let arg_stack_size_u12 = u12::new(arg_stack_size as u16);
 
                         proc.emit_many([
                             Inst::BeginFnCall {
@@ -313,7 +356,7 @@ impl ProcedureGen {
                             },
                             Inst::SubImm {
                                 a: EitherReg::Phys(Register::SP),
-                                imm: arg_stack_size_i12,
+                                imm: arg_stack_size_u12,
                                 dest: EitherReg::Phys(Register::SP),
                             },
                         ]);
@@ -323,6 +366,7 @@ impl ProcedureGen {
                                 source: *arg,
                                 base: EitherReg::Phys(Register::SP),
                                 offset: u12::new(i as u16),
+                                size: StoreSize::Doubleword,
                             });
                         }
 
@@ -333,14 +377,14 @@ impl ProcedureGen {
                         proc.emit_many([
                             Inst::AddImm {
                                 a: EitherReg::Phys(Register::SP),
-                                imm: AddImmVal::Fixed(arg_stack_size_i12),
+                                imm: AddImmVal::Fixed(arg_stack_size_u12),
                                 dest: EitherReg::Phys(Register::SP),
                             },
                             Inst::EndFnCall,
                         ]);
 
                         if let Some(dest) = dest {
-                            proc.emit(Inst::MovReg {
+                            proc.emit(Inst::Mov {
                                 src: EitherReg::Phys(Register::X0),
                                 dest: EitherReg::Virt(dest),
                             });
@@ -368,7 +412,7 @@ impl ProcedureGen {
                 ]),
 
                 Terminator::Return { value } => proc.emit_many([
-                    Inst::MovReg {
+                    Inst::Mov {
                         src: EitherReg::Virt(value),
                         dest: EitherReg::Phys(Register::X0),
                     },
@@ -403,7 +447,7 @@ impl ProcedureGen {
                 second: Register::LR,
                 offset: i7::new(-2),
             },
-            Inst::MovReg {
+            Inst::Mov {
                 src: EitherReg::Phys(Register::SP),
                 dest: EitherReg::Phys(Register::FP),
             },
@@ -412,7 +456,7 @@ impl ProcedureGen {
         if stack_size > 0 {
             assembler.emit(Inst::SubImm {
                 a: EitherReg::Phys(Register::SP),
-                imm: i12::new(stack_size as i16),
+                imm: u12::new(stack_size),
                 dest: EitherReg::Phys(Register::SP),
             });
         }
@@ -432,7 +476,7 @@ impl ProcedureGen {
         if stack_size > 0 {
             assembler.emit(Inst::AddImm {
                 a: EitherReg::Phys(Register::SP),
-                imm: AddImmVal::Fixed(i12::new(stack_size as i16)),
+                imm: AddImmVal::Fixed(u12::new(stack_size)),
                 dest: EitherReg::Phys(Register::SP),
             });
         }

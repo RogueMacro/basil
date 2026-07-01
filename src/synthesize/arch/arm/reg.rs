@@ -1,4 +1,4 @@
-use std::collections::{BTreeMap, HashMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use colored::Colorize;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -10,7 +10,7 @@ use crate::{
     ir::{BasicBlock, Label, Op, Operation, Terminator, VirtualReg, lifetime::Lifetime},
     synthesize::arch::arm::{
         ArmAssembler, InstMarker,
-        instr::{self, BranchOffset, EitherReg, Input, Inst},
+        instr::{self, BranchOffset, EitherReg, Input, Inst, StoreSize},
     },
 };
 
@@ -18,7 +18,9 @@ pub type Reg = Register;
 
 /// All general-purpose registers + stack pointer on the ARM architecture.
 #[repr(u32)]
-#[derive(EnumIter, FromPrimitive, ToPrimitive, Clone, Copy, Debug, PartialEq, Eq, Hash)]
+#[derive(
+    EnumIter, FromPrimitive, ToPrimitive, Clone, Copy, Debug, PartialEq, Eq, Hash, PartialOrd, Ord,
+)]
 pub enum Register {
     X0 = 0,   // 1st argument / return value
     X1 = 1,   // 2nd argument
@@ -152,7 +154,11 @@ impl Stack {
     }
 
     pub fn offset_of(&mut self, vreg: &VirtualReg) -> u12 {
-        *self.map.get(vreg).unwrap() + self.tmp_offset
+        *self
+            .map
+            .get(vreg)
+            .unwrap_or_else(|| panic!("{} is not on the stack", vreg))
+            + self.tmp_offset
     }
 
     pub fn free(&mut self, vreg: VirtualReg) {
@@ -175,10 +181,10 @@ pub fn allocate(
     let mut stack = Stack::default();
     stack.size = stack_size;
 
-    let mut regs_free: HashSet<Register> = HashSet::from_iter(CALLER_SAVED_REGS.iter().copied());
-    let mut regs_in_use: HashSet<Register> = HashSet::new();
+    let mut regs_free: BTreeSet<Register> = BTreeSet::from_iter(CALLER_SAVED_REGS.iter().copied());
+    let mut regs_in_use: BTreeSet<Register> = BTreeSet::new();
 
-    let mut vreg_map: HashMap<VirtualReg, Register> = HashMap::new();
+    let mut vreg_map: BTreeMap<VirtualReg, Register> = BTreeMap::new();
 
     let mut last_uses = HashMap::new();
     for (i, (inst, _)) in instructions.iter().enumerate() {
@@ -216,6 +222,7 @@ pub fn allocate(
                             source: *reg,
                             base: EitherReg::Phys(SP),
                             offset,
+                            size: StoreSize::Doubleword,
                         },
                         InstMarker::None,
                     ));
