@@ -155,10 +155,6 @@ impl Parser {
         } else {
             let body = self.parse_block()?;
 
-            if name == "main" {
-                println!("{:#?}", body);
-            }
-
             Ok(Item::Function {
                 name,
                 args,
@@ -253,6 +249,9 @@ impl Parser {
                     let var = match expr.inner {
                         ExprInner::Variable(var) => Assignable::Var(var),
                         ExprInner::Deref(var, None) => Assignable::Ptr(var, None),
+                        ExprInner::Index(array, index, size) => {
+                            Assignable::Index(array, index, size)
+                        }
                         _ => {
                             return Err(self
                                 .err_ctx
@@ -600,7 +599,7 @@ impl Parser {
         }
 
         if matches!(self.lexer.current(), Some((Token::LeftParenthesis, _))) {
-            self.lexer.take_current()?;
+            self.lexer.lex_one()?;
 
             let args = self.parse_call_args()?;
 
@@ -608,6 +607,17 @@ impl Parser {
 
             Ok(Expression {
                 inner: ExprInner::FnCall(ident, args),
+                span: self.span((range.start)..(self.lexer.last_token_end())),
+            })
+        } else if matches!(self.lexer.current(), Some((Token::LeftBracket, _))) {
+            self.lexer.lex_one()?;
+
+            let expr = self.parse_expr()?;
+
+            self.expect_token(Token::RightBracket, "expected closing bracket")?;
+
+            Ok(Expression {
+                inner: ExprInner::Index(ident, Box::new(expr), None),
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         } else {

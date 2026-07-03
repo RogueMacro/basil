@@ -196,6 +196,29 @@ impl<'ir> BlockBuilder<'ir> {
                                 size: size.unwrap(),
                             });
                         }
+                        Assignable::Index(array, index_expr, item_size) => {
+                            let index = self.flatten_expr(*index_expr, None);
+                            let index_vreg = self.src_to_vreg(index);
+
+                            let array_vreg = self.get_vreg();
+                            self.load_var(&array, array_vreg);
+
+                            let ptr = self.get_vreg();
+
+                            let src = self.src_to_vreg(src);
+
+                            self.block_ops.push(Op::Add {
+                                a: array_vreg,
+                                b: index_vreg,
+                                dest: ptr,
+                            });
+
+                            self.block_ops.push(Op::StorePointer {
+                                src,
+                                ptr,
+                                size: item_size.unwrap(),
+                            });
+                        }
                     }
                 }
 
@@ -440,6 +463,34 @@ impl<'ir> BlockBuilder<'ir> {
                 SourceVal::VReg(dest)
             }
 
+            ExprInner::Cast(expr, _typ) => self.flatten_expr(*expr, dest),
+
+            ExprInner::Index(var, expr, item_size) => {
+                let index = self.flatten_expr(*expr, None);
+                let index_vreg = self.src_to_vreg(index);
+
+                let array_vreg = self.get_vreg();
+                self.load_var(&var, array_vreg);
+
+                let ptr = self.get_vreg();
+
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.block_ops.push(Op::Add {
+                    a: array_vreg,
+                    b: index_vreg,
+                    dest: ptr,
+                });
+
+                self.block_ops.push(Op::LoadPointer {
+                    ptr,
+                    size: item_size.unwrap(),
+                    dest,
+                });
+
+                SourceVal::VReg(dest)
+            }
+
             ExprInner::FnCall(function, args) => {
                 let args = args
                     .into_iter()
@@ -459,8 +510,6 @@ impl<'ir> BlockBuilder<'ir> {
 
                 SourceVal::VReg(dest)
             }
-
-            ExprInner::Cast(expr, _typ) => self.flatten_expr(*expr, dest),
         }
     }
 

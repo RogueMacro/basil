@@ -189,7 +189,7 @@ impl Analyzer {
                 expr,
                 var_span,
             } => {
-                let var_type = self.expression(expr);
+                let var_type = self.expression(expr, None);
                 if self
                     .variables
                     .insert(var.clone(), var_type.unwrap_or(SemanticType::Unit))
@@ -207,7 +207,7 @@ impl Analyzer {
                 expr,
                 var_span,
             } => {
-                let assign_type = self.expression(expr);
+                let assign_type = self.expression(expr, None);
                 let decl_type = match var {
                     Assignable::Var(var) => self.check_var(var, var_span),
                     Assignable::Ptr(ptr, size) => {
@@ -217,6 +217,15 @@ impl Analyzer {
                         }
 
                         typ
+                    }
+                    Assignable::Index(array, index, size) => {
+                        let item_type = self.check_index(array, index, var_span);
+
+                        if let Some(item_type) = item_type {
+                            *size = Some(item_type.size());
+                        }
+
+                        None
                     }
                 };
 
@@ -236,7 +245,7 @@ impl Analyzer {
                 }
             }
             Statement::If { guard, body } | Statement::WhileLoop { guard, body } => {
-                if let Some(typ) = self.expression(guard)
+                if let Some(typ) = self.expression(guard, Some(SemanticType::Bool))
                     && typ != SemanticType::Bool
                 {
                     self.err_ctx
@@ -252,10 +261,10 @@ impl Analyzer {
                 return self.body(body, fn_ret_type, fn_decl_span);
             }
             Statement::Expr(expr) => {
-                self.expression(expr);
+                self.expression(expr, None);
             }
             Statement::Return(expr) => {
-                if let Some(typ) = self.expression(expr)
+                if let Some(typ) = self.expression(expr, Some(fn_ret_type.clone()))
                     && &typ != fn_ret_type
                 {
                     self.err_ctx
@@ -276,9 +285,16 @@ impl Analyzer {
         false
     }
 
-    fn expression(&mut self, expr: &mut Expression) -> Option<SemanticType> {
+    fn expression(
+        &mut self,
+        expr: &mut Expression,
+        hint: Option<SemanticType>,
+    ) -> Option<SemanticType> {
         match &mut expr.inner {
-            ExprInner::Const(_) => Some(SemanticType::I64),
+            ExprInner::Const(_) => Some(
+                hint.filter(|hint| hint.compatible_with(&SemanticType::I64))
+                    .unwrap_or(SemanticType::I64),
+            ),
             ExprInner::Character(_) => Some(SemanticType::Char),
             ExprInner::String(_) => Some(SemanticType::Pointer(Box::new(SemanticType::Char))),
             ExprInner::Bool(_) => Some(SemanticType::Bool),
@@ -293,8 +309,8 @@ impl Analyzer {
             }
 
             ExprInner::Arithmetic(expr1, expr2, _op, expr_sign) => {
-                if let Some(type1) = self.expression(expr1)
-                    && let Some(type2) = self.expression(expr2)
+                if let Some(type1) = self.expression(expr1, hint.clone())
+                    && let Some(type2) = self.expression(expr2, Some(type1.clone()))
                 {
                     if type1 == type2 {
                         if let Some(type_sign) = type1.sign() {
@@ -324,8 +340,8 @@ impl Analyzer {
             }
 
             ExprInner::Comparison(expr1, expr2, _op, expr_sign) => {
-                if let Some(type1) = self.expression(expr1)
-                    && let Some(type2) = self.expression(expr2)
+                if let Some(type1) = self.expression(expr1, None)
+                    && let Some(type2) = self.expression(expr2, None)
                 {
                     if type1 == type2 {
                         let sign1 = type1.sign();
@@ -370,7 +386,7 @@ impl Analyzer {
 
             ExprInner::Logical(lhs, rhs, _) => {
                 if self
-                    .expression(lhs)
+                    .expression(lhs, Some(SemanticType::Bool))
                     .is_some_and(|t| t != SemanticType::Bool)
                 {
                     self.err_ctx
@@ -381,7 +397,7 @@ impl Analyzer {
                 }
 
                 if self
-                    .expression(rhs)
+                    .expression(rhs, Some(SemanticType::Bool))
                     .is_some_and(|t| t != SemanticType::Bool)
                 {
                     self.err_ctx
@@ -396,7 +412,7 @@ impl Analyzer {
 
             ExprInner::Negate(expr) => {
                 if self
-                    .expression(expr)
+                    .expression(expr, None)
                     .is_some_and(|t| t != SemanticType::Bool)
                 {
                     self.err_ctx
@@ -410,7 +426,7 @@ impl Analyzer {
             }
 
             ExprInner::Cast(expr, cast_to) => {
-                if let Some(expr_type) = self.expression(expr) {
+                if let Some(expr_type) = self.expression(expr, None) {
                     if expr_type.can_cast_to(cast_to) {
                         return Some(cast_to.clone());
                     }
@@ -428,10 +444,20 @@ impl Analyzer {
                 None
             }
 
+            ExprInner::Index(array, index_expr, size) => {
+                let item_type = self.check_index(array, index_expr, &expr.span);
+
+                if let Some(item_type) = item_type.as_ref() {
+                    *size = Some(item_type.size());
+                }
+
+                item_type
+            }
+
             ExprInner::FnCall(function, call_args) => {
                 let call_types: Vec<(SemanticType, Span)> = call_args
                     .iter_mut()
-                    .filter_map(|e| self.expression(e).map(|t| (t, e.span.clone())))
+                    .filter_map(|e| self.expression(e, None).map(|t| (t, e.span.clone())))
                     .collect();
 
                 if let Some((fn_decl_span, ret_type, decl_args)) = self.functions.get(function) {
@@ -486,6 +512,44 @@ impl Analyzer {
                 }
             }
         }
+    }
+
+    fn check_index(
+        &mut self,
+        array: &str,
+        index_expr: &mut Expression,
+        span: &Span,
+    ) -> Option<SemanticType> {
+        if let Some(expr_type) = self.expression(index_expr, Some(SemanticType::U64))
+            && expr_type != SemanticType::U64
+        {
+            self.err_ctx
+                .error(span.clone())
+                .with_message(format!(
+                    "cannot index {} with value of type {}",
+                    array, expr_type
+                ))
+                .with_label(index_expr.span.clone(), "expected u64")
+                .report();
+        }
+
+        let var_type = self.check_var(array, span)?;
+
+        if !matches!(var_type, SemanticType::Pointer(_)) {
+            self.err_ctx
+                .error(span.clone())
+                .with_message(format!("cannot index variable of type {}", var_type))
+                .with_label(index_expr.span.clone(), "expected pointer")
+                .report();
+
+            return None;
+        }
+
+        let SemanticType::Pointer(item_type) = var_type else {
+            unreachable!()
+        };
+
+        Some(*item_type)
     }
 
     fn check_var(&mut self, symbol: &str, span: &Span) -> Option<SemanticType> {
@@ -574,7 +638,17 @@ impl SemanticType {
                 | (Pointer(_), I64)
                 | (I64, Pointer(_))
                 | (Pointer(_), Pointer(_))
+                | (I64, U64)
+                | (U64, I64)
         )
+    }
+
+    /// If the type is not concretely decided, like an integer constant, the type can be switched to
+    /// another compatible type depending on the context.
+    pub fn compatible_with(&self, other: &SemanticType) -> bool {
+        use SemanticType::*;
+
+        matches!((self, other), (U64, I64) | (I64, U64))
     }
 }
 

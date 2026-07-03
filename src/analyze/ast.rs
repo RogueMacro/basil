@@ -92,12 +92,13 @@ pub enum Statement {
 pub enum Assignable {
     Var(String),
     Ptr(String, Option<VarSize>),
+    Index(String, Box<Expression>, Option<VarSize>),
 }
 
 impl Assignable {
     pub fn symbol(&self) -> &str {
         match self {
-            Self::Var(var) | Self::Ptr(var, _) => var,
+            Self::Var(var) | Self::Ptr(var, _) | Self::Index(var, _, _) => var,
         }
     }
 }
@@ -125,6 +126,7 @@ pub enum ExprInner {
     Negate(Box<Expression>),
 
     Cast(Box<Expression>, SemanticType),
+    Index(String, Box<Expression>, Option<VarSize>),
 
     FnCall(String, Vec<Expression>),
 }

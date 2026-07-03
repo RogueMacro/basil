@@ -18,6 +18,8 @@ pub enum Token {
     RightParenthesis,
     LeftCurlyBracket,
     RightCurlyBracket,
+    LeftBracket,
+    RightBracket,
 
     Reference,
 
@@ -44,6 +46,8 @@ impl Token {
             (')', _) => (Self::RightParenthesis, false),
             ('{', _) => (Self::LeftCurlyBracket, false),
             ('}', _) => (Self::RightCurlyBracket, false),
+            ('[', _) => (Self::LeftBracket, false),
+            (']', _) => (Self::RightBracket, false),
 
             ('&', _) => (Self::Reference, false),
 
