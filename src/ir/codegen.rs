@@ -317,7 +317,7 @@ impl<'ir> BlockBuilder<'ir> {
 
     fn flatten_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
         match expr.inner {
-            ExprInner::Const(num) => SourceVal::Immediate(num as u64),
+            ExprInner::Const(num, explicit_type) => SourceVal::Immediate(num),
             ExprInner::Character(c) => SourceVal::Immediate(c as u64),
             ExprInner::String(string) => {
                 let str_id = self.ir.insert_str_literal(string);

@@ -3,6 +3,7 @@ use std::{ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorContext,
     lex::token::{Keyword, Operator, Token},
+    semantics::SemanticType,
 };
 
 pub mod token;
@@ -140,7 +141,7 @@ impl Lexer {
         }
 
         if c.is_ascii_digit() {
-            return Ok(Some(self.lex_number()));
+            return self.lex_number().map(Some);
         }
 
         if c == '\'' {
@@ -241,12 +242,12 @@ impl Lexer {
             Ok(c)
         } else {
             let span = self.span((self.index - 1)..self.index);
-            return Err(self
+            Err(self
                 .err_ctx
                 .error(span.clone())
                 .with_message("invalid string")
                 .with_label(span, "not a valid character")
-                .finish());
+                .finish())
         }
     }
 
@@ -271,7 +272,7 @@ impl Lexer {
         (token, start..self.index)
     }
 
-    fn lex_number(&mut self) -> (Token, Range<usize>) {
+    fn lex_number(&mut self) -> Result<(Token, Range<usize>), Error> {
         let start = self.index;
         let mut string = String::new();
         while let Some(c) = self.cur_char()
@@ -282,7 +283,26 @@ impl Lexer {
         }
 
         let num: u64 = string.parse().unwrap();
-        (Token::Number(num), start..self.index)
+        let mut explicit_type = None;
+
+        if matches!(self.cur_char(), Some('i' | 'u')) {
+            let begin = self.index;
+            self.index += 3;
+            let type_specifier = &self.code[begin..self.index];
+            if !matches!(type_specifier, ['u' | 'i', '6', '4']) {
+                let span = self.span(begin..self.index);
+                return Err(self
+                    .err_ctx
+                    .error(span.clone())
+                    .with_message("invalid number type specifier")
+                    .with_label(span, "expected u64 or i64")
+                    .finish());
+            }
+
+            explicit_type = Some(SemanticType::from(&String::from_iter(type_specifier)));
+        }
+
+        Ok((Token::Number(num, explicit_type), start..self.index))
     }
 
     fn lex_comment(&mut self) {

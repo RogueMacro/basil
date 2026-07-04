@@ -1,10 +1,10 @@
-use crate::analyze::ast::ArithmeticOp;
+use crate::analyze::{ast::ArithmeticOp, semantics::SemanticType};
 
 #[derive(Debug, Clone, PartialEq)]
 pub enum Token {
     Keyword(Keyword),
 
-    Number(u64),
+    Number(u64, Option<SemanticType>),
     Character(char),
     String(String),
     Bool(bool),

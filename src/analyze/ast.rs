@@ -111,7 +111,7 @@ pub struct Expression {
 
 #[derive(Debug, Clone)]
 pub enum ExprInner {
-    Const(u64),
+    Const(u64, Option<SemanticType>),
     Character(char),
     String(String),
     Bool(bool),

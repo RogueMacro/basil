@@ -291,8 +291,10 @@ impl Analyzer {
         hint: Option<SemanticType>,
     ) -> Option<SemanticType> {
         match &mut expr.inner {
-            ExprInner::Const(_) => Some(
-                hint.filter(|hint| hint.compatible_with(&SemanticType::I64))
+            ExprInner::Const(_, explicit_type) => Some(
+                explicit_type
+                    .clone()
+                    .or(hint.filter(|hint| hint.compatible_with(&SemanticType::I64)))
                     .unwrap_or(SemanticType::I64),
             ),
             ExprInner::Character(_) => Some(SemanticType::Char),
@@ -567,7 +569,7 @@ impl Analyzer {
     }
 
     fn check_ptr(&mut self, symbol: &str, span: &Span) -> Option<SemanticType> {
-        if let Some(typ) = self.check_var(symbol, &span) {
+        if let Some(typ) = self.check_var(symbol, span) {
             match typ {
                 SemanticType::Pointer(typ) => return Some(*typ),
                 typ => {

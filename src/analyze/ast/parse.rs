@@ -377,8 +377,8 @@ impl Parser {
         let (token, range) = self.expect_take_current()?;
         let span = self.span(range.clone());
         let expr = match token {
-            Token::Number(num) => Expression {
-                inner: ExprInner::Const(num),
+            Token::Number(num, explicit_type) => Expression {
+                inner: ExprInner::Const(num, explicit_type),
                 span,
             },
             Token::LeftParenthesis => {
@@ -490,8 +490,8 @@ impl Parser {
 
         // BUG: the largest possible 64-bit unsigned integer doesnt work.
         let expr = match token {
-            (Token::Number(num), range) => Expression {
-                inner: ExprInner::Const(num),
+            (Token::Number(num, explicit_type), range) => Expression {
+                inner: ExprInner::Const(num, explicit_type),
                 span: self.span(range),
             },
             (Token::Reference, ref_range) => {
@@ -723,17 +723,17 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(2),
+                        inner: ExprInner::Const(2, None),
                         ..
                     }),
                     deref!(Expression {
                         inner: ExprInner::Arithmetic(
                             deref!(Expression {
-                                inner: ExprInner::Const(3),
+                                inner: ExprInner::Const(3, None),
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(4),
+                                inner: ExprInner::Const(4, None),
                                 ..
                             }),
                             ArithmeticOp::Sub,
@@ -757,17 +757,17 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(2),
+                        inner: ExprInner::Const(2, None),
                         ..
                     }),
                     deref!(Expression {
                         inner: ExprInner::Arithmetic(
                             deref!(Expression {
-                                inner: ExprInner::Const(3),
+                                inner: ExprInner::Const(3, None),
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(4),
+                                inner: ExprInner::Const(4, None),
                                 ..
                             }),
                             ArithmeticOp::Div,
@@ -792,17 +792,17 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(2),
+                        inner: ExprInner::Const(2, None),
                         ..
                     }),
                     deref!(Expression {
                         inner: ExprInner::Arithmetic(
                             deref!(Expression {
-                                inner: ExprInner::Const(3),
+                                inner: ExprInner::Const(3, None),
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(4),
+                                inner: ExprInner::Const(4, None),
                                 ..
                             }),
                             ArithmeticOp::Mul,
@@ -829,11 +829,11 @@ mod tests {
                     deref!(Expression {
                         inner: ExprInner::Arithmetic(
                             deref!(Expression {
-                                inner: ExprInner::Const(2),
+                                inner: ExprInner::Const(2, None),
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(3),
+                                inner: ExprInner::Const(3, None),
                                 ..
                             }),
                             ArithmeticOp::Mul,
@@ -842,7 +842,7 @@ mod tests {
                         ..
                     }),
                     deref!(Expression {
-                        inner: ExprInner::Const(4),
+                        inner: ExprInner::Const(4, None),
                         ..
                     }),
                     ArithmeticOp::Add,
@@ -862,17 +862,17 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(2),
+                        inner: ExprInner::Const(2, None),
                         ..
                     }),
                     deref!(Expression {
                         inner: ExprInner::Arithmetic(
                             deref!(Expression {
-                                inner: ExprInner::Const(3),
+                                inner: ExprInner::Const(3, None),
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(4),
+                                inner: ExprInner::Const(4, None),
                                 ..
                             }),
                             ArithmeticOp::Add,
@@ -897,7 +897,7 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(1),
+                        inner: ExprInner::Const(1, None),
                         ..
                     }),
                     deref!(Expression {
@@ -905,11 +905,11 @@ mod tests {
                             deref!(Expression {
                                 inner: ExprInner::Arithmetic(
                                     deref!(Expression {
-                                        inner: ExprInner::Const(2),
+                                        inner: ExprInner::Const(2, None),
                                         ..
                                     }),
                                     deref!(Expression {
-                                        inner: ExprInner::Const(3),
+                                        inner: ExprInner::Const(3, None),
                                         ..
                                     }),
                                     ArithmeticOp::Mul,
@@ -922,11 +922,11 @@ mod tests {
                                     deref!(Expression {
                                         inner: ExprInner::Arithmetic(
                                             deref!(Expression {
-                                                inner: ExprInner::Const(4),
+                                                inner: ExprInner::Const(4, None),
                                                 ..
                                             }),
                                             deref!(Expression {
-                                                inner: ExprInner::Const(5),
+                                                inner: ExprInner::Const(5, None),
                                                 ..
                                             }),
                                             ArithmeticOp::Add,
@@ -935,7 +935,7 @@ mod tests {
                                         ..
                                     }),
                                     deref!(Expression {
-                                        inner: ExprInner::Const(6),
+                                        inner: ExprInner::Const(6, None),
                                         ..
                                     }),
                                     ArithmeticOp::Div,
@@ -965,7 +965,7 @@ mod tests {
             Expression {
                 inner: ExprInner::Arithmetic(
                     deref!(Expression {
-                        inner: ExprInner::Const(2),
+                        inner: ExprInner::Const(2, None),
                         ..
                     }),
                     deref!(Expression {
@@ -975,7 +975,7 @@ mod tests {
                                 ..
                             }),
                             deref!(Expression {
-                                inner: ExprInner::Const(4),
+                                inner: ExprInner::Const(4, None),
                                 ..
                             }),
                             ArithmeticOp::Mul,
