@@ -71,6 +71,7 @@ pub enum Operator {
     Minus,
     Star,
     Slash,
+    Modulo,
 
     Not,
 
@@ -96,6 +97,7 @@ impl Operator {
             ('-', _) => (Self::Minus, false),
             ('*', _) => (Self::Star, false),
             ('/', _) => (Self::Slash, false),
+            ('%', _) => (Self::Modulo, false),
 
             ('!', _) => (Self::Not, false),
 
@@ -113,7 +115,7 @@ impl Operator {
             And => 1,
             Equal | NotEqual | Less | LessOrEqual | Greater | GreaterOrEqual => 2,
             Plus | Minus => 3,
-            Star | Slash => 4,
+            Star | Slash | Modulo => 4,
             Not => 5,
         }
     }

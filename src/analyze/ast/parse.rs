@@ -457,6 +457,9 @@ impl Parser {
             Operator::Slash => {
                 ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Div, None)
             }
+            Operator::Modulo => {
+                ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), ArithmeticOp::Mod, None)
+            }
             Operator::Equal => {
                 ExprInner::Comparison(Box::new(lhs), Box::new(rhs), CompareOp::Equal, None)
             }

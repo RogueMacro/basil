@@ -374,6 +374,7 @@ impl<'ir> BlockBuilder<'ir> {
                     ArithmeticOp::Sub => self.block_ops.push(Op::Subtract { a, b, dest }),
                     ArithmeticOp::Mul => self.block_ops.push(Op::Multiply { a, b, dest }),
                     ArithmeticOp::Div => self.block_ops.push(Op::Divide { a, b, dest }),
+                    ArithmeticOp::Mod => self.block_ops.push(Op::Modulo { a, b, dest }),
                 }
 
                 SourceVal::VReg(dest)

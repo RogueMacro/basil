@@ -312,6 +312,18 @@ impl ProcedureGen {
                         dest,
                         signed: true,
                     }),
+                    Op::Modulo { a, b, dest } => {
+                        proc.emit_many([
+                            Inst::Div {
+                                a,
+                                b,
+                                dest,
+                                signed: true,
+                            },
+                            Inst::Mul { a: dest, b, dest },
+                            Inst::Sub { a, b: dest, dest },
+                        ]);
+                    }
 
                     Op::Negate { val, dest } => proc.emit_many([
                         Inst::CmpImm {

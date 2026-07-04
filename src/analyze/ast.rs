@@ -137,6 +137,7 @@ pub enum ArithmeticOp {
     Sub,
     Mul,
     Div,
+    Mod,
 }
 
 #[derive(Debug, Clone, Copy)]
