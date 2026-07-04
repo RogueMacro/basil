@@ -413,6 +413,32 @@ impl Analyzer {
             }
 
             ExprInner::Negate(expr) => {
+                let typ = self.expression(expr, None);
+
+                if let Some(typ) = typ {
+                    if matches!(typ.sign(), Some(Sign::Unsigned)) {
+                        self.err_ctx
+                            .error(expr.span.clone())
+                            .with_message("cannot negate an unsigned integer")
+                            .with_label(expr.span.clone(), "expected signed integer")
+                            .report();
+                    }
+
+                    if !matches!(typ, SemanticType::I64) {
+                        self.err_ctx
+                            .error(expr.span.clone())
+                            .with_message("cannot negate a non-integer")
+                            .with_label(expr.span.clone(), "expected signed integer")
+                            .report();
+                    }
+
+                    Some(typ)
+                } else {
+                    Some(SemanticType::I64)
+                }
+            }
+
+            ExprInner::Not(expr) => {
                 if self
                     .expression(expr, None)
                     .is_some_and(|t| t != SemanticType::Bool)

@@ -945,13 +945,13 @@ impl Inst<Register> {
                 (0b10011011000_00000_011111 << 10) | (a << 16) | (b << 5) | dest
             }
 
-            Inst::Neg { .. } => todo!(),
-            // Inst::Neg { val, dest } => Inst::Sub {
-            //     a: Register::SP,
-            //     b: val,
-            //     dest,
-            // }
-            // .encode(),
+            // Inst::Neg { .. } => todo!(),
+            Inst::Neg { val, dest } => Inst::Sub {
+                a: Register::SP,
+                b: val,
+                dest,
+            }
+            .encode(),
 
             // Encoding:
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0

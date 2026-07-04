@@ -123,6 +123,7 @@ pub enum ExprInner {
     Arithmetic(Box<Expression>, Box<Expression>, ArithmeticOp, Option<Sign>),
     Comparison(Box<Expression>, Box<Expression>, CompareOp, Option<Sign>),
     Logical(Box<Expression>, Box<Expression>, LogicalOp),
+    Not(Box<Expression>),
     Negate(Box<Expression>),
 
     Cast(Box<Expression>, SemanticType),

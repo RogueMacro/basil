@@ -187,6 +187,10 @@ pub enum Operation {
         val: VirtualReg,
         dest: VirtualReg,
     },
+    Not {
+        val: VirtualReg,
+        dest: VirtualReg,
+    },
     Compare {
         a: VirtualReg,
         b: VirtualReg,
@@ -259,7 +263,7 @@ impl Operation {
                 assigned = Some(*dest);
             }
 
-            Operation::Negate { val, dest } => {
+            Operation::Not { val, dest } | Operation::Negate { val, dest } => {
                 push(Some(*val));
                 assigned = Some(*dest);
             }
@@ -497,6 +501,7 @@ impl fmt::Display for IR {
                             writeln!(f, "    {} = {} % {}", dest, a, b)?
                         }
 
+                        Operation::Not { val, dest } => writeln!(f, "    {} = not {}", dest, val)?,
                         Operation::Negate { val, dest } => {
                             writeln!(f, "    {} = neg {}", dest, val)?
                         }

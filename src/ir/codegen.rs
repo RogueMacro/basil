@@ -454,6 +454,16 @@ impl<'ir> BlockBuilder<'ir> {
                 SourceVal::VReg(dest)
             }
 
+            ExprInner::Not(expr) => {
+                let val = self.flatten_expr(*expr, dest);
+                let val = self.src_to_vreg(val);
+                let dest = dest.unwrap_or_else(|| self.get_vreg());
+
+                self.block_ops.push(Op::Not { val, dest });
+
+                SourceVal::VReg(dest)
+            }
+
             ExprInner::Negate(expr) => {
                 let val = self.flatten_expr(*expr, dest);
                 let val = self.src_to_vreg(val);

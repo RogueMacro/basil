@@ -10,6 +10,7 @@ use crate::analyze::{
         Lexer,
         token::{Keyword, Operator, Token},
     },
+    semantics::Sign,
 };
 
 pub struct Parser {
@@ -531,11 +532,48 @@ impl Parser {
                     span: self.span(deref_range.start..var_range.end),
                 }
             }
+            (Token::Operator(Operator::Minus), range) => {
+                let expr = self.parse_single_expr()?;
+                match expr.inner {
+                    ExprInner::Const(number, explicit_type) => {
+                        let span = self.span(range);
+
+                        if let Some(explicit_type) = explicit_type
+                            && matches!(explicit_type.sign(), Some(Sign::Unsigned))
+                        {
+                            return Err(self
+                                .err_ctx
+                                .error(span.clone())
+                                .with_message("cannot negate an unsigned integer")
+                                .with_label(
+                                    span,
+                                    format!(
+                                        "negate operator not applicable to type {}",
+                                        explicit_type
+                                    ),
+                                )
+                                .finish());
+                        }
+
+                        Expression {
+                            inner: ExprInner::Const(
+                                -(number as i64) as u64,
+                                Some(SemanticType::I64),
+                            ),
+                            span,
+                        }
+                    }
+                    _ => Expression {
+                        inner: ExprInner::Negate(Box::new(expr)),
+                        span: self.span(range),
+                    },
+                }
+            }
             (Token::Operator(Operator::Not), range) => {
                 let expr = self.parse_single_expr()?;
 
                 Expression {
-                    inner: ExprInner::Negate(Box::new(expr)),
+                    inner: ExprInner::Not(Box::new(expr)),
                     span: self.span(range),
                 }
             }

@@ -325,7 +325,7 @@ impl ProcedureGen {
                         ]);
                     }
 
-                    Op::Negate { val, dest } => proc.emit_many([
+                    Op::Not { val, dest } => proc.emit_many([
                         Inst::CmpImm {
                             val,
                             imm: i12::new(0),
@@ -335,6 +335,8 @@ impl ProcedureGen {
                             dest,
                         },
                     ]),
+
+                    Op::Negate { val, dest } => proc.emit(Inst::Neg { val, dest }),
 
                     Op::Compare { a, b, cond, dest } => {
                         proc.emit_many([
