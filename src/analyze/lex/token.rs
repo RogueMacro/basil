@@ -24,7 +24,7 @@ pub enum Token {
     Reference,
 
     Declare,
-    Assign,
+    Assign(Option<Operator>),
     Arrow,
     PathSeparator,
 
@@ -37,8 +37,12 @@ impl Token {
             (':', Some('=')) => (Self::Declare, true),
             (':', Some(':')) => (Self::PathSeparator, true),
             ('-', Some('>')) => (Self::Arrow, true),
+            ('+', Some('=')) => (Self::Assign(Some(Operator::Plus)), true),
+            ('-', Some('=')) => (Self::Assign(Some(Operator::Minus)), true),
+            ('*', Some('=')) => (Self::Assign(Some(Operator::Star)), true),
+            ('/', Some('=')) => (Self::Assign(Some(Operator::Slash)), true),
 
-            ('=', _) => (Self::Assign, false),
+            ('=', _) => (Self::Assign(None), false),
             (';', _) => (Self::Semicolon, false),
             (':', _) => (Self::Colon, false),
             (',', _) => (Self::Comma, false),

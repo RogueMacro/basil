@@ -295,8 +295,8 @@ impl Parser {
 
             match self.lexer.take_current()? {
                 Some((Token::Semicolon, _)) => Ok(Statement::Expr(expr)),
-                Some((Token::Assign, _)) => {
-                    let var = match expr.inner {
+                Some((Token::Assign(op), assign_range)) => {
+                    let var = match expr.inner.clone() {
                         ExprInner::Variable(var) => Assignable::Var(var),
                         ExprInner::Deref(var, None) => Assignable::Ptr(var, None),
                         ExprInner::Index(array, index, size) => {
@@ -312,8 +312,32 @@ impl Parser {
                         }
                     };
 
-                    let rvalue = self.parse_expr()?;
+                    let mut rvalue = self.parse_expr()?;
                     self.expect_semicolon()?;
+
+                    if let Some(op) = op {
+                        let Some(arith_op) = op.as_arithmetic() else {
+                            let op_span = self.span(assign_range);
+                            return Err(self
+                                .err_ctx
+                                .error(op_span.clone())
+                                .with_message("invalid assign operator")
+                                .with_label(op_span, "expected +=, -=, *= or /=")
+                                .finish());
+                        };
+
+                        let span = self.span(expr.span.1.start..rvalue.span.1.end);
+                        rvalue = Expression {
+                            inner: ExprInner::Arithmetic(
+                                Box::new(expr),
+                                Box::new(rvalue),
+                                arith_op,
+                                None,
+                            ),
+                            span,
+                        };
+                    }
+
                     Ok(Statement::Assign {
                         var,
                         expr: rvalue,
