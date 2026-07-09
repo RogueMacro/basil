@@ -107,7 +107,11 @@ impl Assembler for ArmAssembler {
         self.instructions.len() * 4
     }
 
-    fn into_machine_code(mut self, str_table_offset: usize) -> MachineCode {
+    fn str_literals(&self) -> &[String] {
+        &self.code.str_literals
+    }
+
+    fn into_machine_code(mut self, str_table_offset: usize, bss_offset: u64) -> MachineCode {
         println!("final code size: {} instructions", self.instructions.len());
 
         self.code
@@ -117,7 +121,7 @@ impl Assembler for ArmAssembler {
                     .into_iter()
                     .enumerate()
                     .flat_map(|(i, mut inst)| {
-                        inst.link(i as i32, &self.functions, str_table_offset);
+                        inst.link(i as i32, &self.functions, str_table_offset, bss_offset);
                         inst.encode().to_le_bytes()
                     }),
             );
@@ -227,6 +231,17 @@ impl ProcedureGen {
                                     },
                                 ]);
                             }
+                            SourceVal::StaticMem(offset) => proc.emit_many([
+                                Inst::Adrp {
+                                    page_addr: PageAddr::Bss(offset),
+                                    dest,
+                                },
+                                Inst::AddImm {
+                                    a: EitherReg::Virt(dest),
+                                    imm: AddImmVal::Bss(offset),
+                                    dest: EitherReg::Virt(dest),
+                                },
+                            ]),
                         }
                     }
                     Op::Store { src, stack_offset } => {

@@ -153,6 +153,7 @@ pub struct SectionHeader {
 #[derive(NoUninit, Clone, Copy)]
 pub enum SectionFlags {
     Regular = 0,
+    ZeroFill = 1,
     CStringLiterals = 2,
 }
 

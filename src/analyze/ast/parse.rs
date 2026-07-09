@@ -78,11 +78,60 @@ impl Parser {
             Keyword::Function => self.parse_function(range.start),
             Keyword::Use => unimplemented!(),
             Keyword::Extern => self.parse_extern(),
+            Keyword::Memory => self.parse_memory(),
             _ => Err(self
                 .err_ctx
                 .unexpected_token(self.span(range), "expected function or extern import")
                 .finish()),
         }
+    }
+
+    fn parse_memory(&mut self) -> Result<Item, Error> {
+        let (token, range) = self.expect_take_current()?;
+        let Token::Ident(name) = token else {
+            let span = self.span(range);
+            return Err(self
+                .err_ctx
+                .error(span.clone())
+                .with_message("invalid memory statement")
+                .with_label(span, "expected identifier")
+                .finish());
+        };
+
+        // self.expect_token(Token::LeftBracket, "expected opening bracket")?;
+        //
+        // let (token, range) = self.expect_take_current()?;
+        // let Token::Number(length, explicit_type) = token else {
+        //     let span = self.span(range);
+        //     return Err(self
+        //         .err_ctx
+        //         .error(span.clone())
+        //         .with_message("invalid memory statement")
+        //         .with_label(span, "expected segment length")
+        //         .finish());
+        // };
+        //
+        // if explicit_type
+        //     .and_then(|t| t.sign())
+        //     .is_some_and(|s| s != Sign::Unsigned)
+        // {
+        //     let span = self.span(range);
+        //     return Err(self
+        //         .err_ctx
+        //         .error(span.clone())
+        //         .with_message("invalid memory statement")
+        //         .with_label(span, "segment length must be an unsigned integer")
+        //         .finish());
+        // }
+        //
+        // self.expect_token(Token::RightBracket, "expected closing bracket")?;
+        self.expect_token(Token::Colon, "expected memory segment type")?;
+
+        let typ = self.parse_type()?;
+
+        self.expect_semicolon()?;
+
+        Ok(Item::MemorySegment { name, typ })
     }
 
     fn parse_extern(&mut self) -> Result<Item, Error> {

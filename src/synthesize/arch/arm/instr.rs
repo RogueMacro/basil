@@ -131,14 +131,20 @@ impl FnOffset {
 pub enum PageAddr {
     Fixed(i21),
     String(usize),
+    Bss(u64),
 }
 
 impl PageAddr {
-    pub fn link(&mut self, index: i32, str_table_offset: usize) {
+    pub fn link(&mut self, index: i32, str_table_offset: usize, bss_offset: u64) {
         match self {
             PageAddr::Fixed(_) => (),
             PageAddr::String(rel_offset) => {
                 let abs_offset = str_table_offset + *rel_offset;
+                let page_addr = i21::new((abs_offset / 4096) as i32);
+                *self = PageAddr::Fixed(page_addr);
+            }
+            PageAddr::Bss(rel_offset) => {
+                let abs_offset = bss_offset + *rel_offset;
                 let page_addr = i21::new((abs_offset / 4096) as i32);
                 *self = PageAddr::Fixed(page_addr);
             }
@@ -157,20 +163,20 @@ impl PageAddr {
 pub enum AddImmVal {
     Fixed(u12),
     String(usize),
+    Bss(u64),
 }
 
 impl AddImmVal {
-    pub fn link(&mut self, index: i32, str_table_offset: usize) {
+    pub fn link(&mut self, index: i32, str_table_offset: usize, bss_offset: u64) {
         match self {
             AddImmVal::Fixed(_) => (),
             AddImmVal::String(rel_offset) => {
                 let abs_offset = str_table_offset + *rel_offset;
-                println!(
-                    "abs offset: {} % 4096 = {}  (max: {})",
-                    abs_offset,
-                    abs_offset % 4096,
-                    u12::MAX
-                );
+                let addr_in_page = u12::new((abs_offset % 4096) as u16);
+                *self = AddImmVal::Fixed(addr_in_page);
+            }
+            AddImmVal::Bss(rel_offset) => {
+                let abs_offset = bss_offset + *rel_offset;
                 let addr_in_page = u12::new((abs_offset % 4096) as u16);
                 *self = AddImmVal::Fixed(addr_in_page);
             }
@@ -717,13 +723,19 @@ impl Inst<Register> {
         }
     }
 
-    pub fn link(&mut self, index: i32, fn_map: &HashMap<String, usize>, str_table_offset: usize) {
+    pub fn link(
+        &mut self,
+        index: i32,
+        fn_map: &HashMap<String, usize>,
+        str_table_offset: usize,
+        bss_offset: u64,
+    ) {
         match self {
             Inst::BranchLink { offset } => offset.fix(index, fn_map),
 
-            Inst::Adrp { page_addr, .. } => page_addr.link(index, str_table_offset),
+            Inst::Adrp { page_addr, .. } => page_addr.link(index, str_table_offset, bss_offset),
 
-            Inst::AddImm { imm, .. } => imm.link(index, str_table_offset),
+            Inst::AddImm { imm, .. } => imm.link(index, str_table_offset, bss_offset),
 
             _ => (),
         }
@@ -758,7 +770,7 @@ impl Inst<Register> {
                 let page_addr = page_addr as u32;
                 let dest = dest as u32;
 
-                let up19 = page_addr & (0b1111111111111111111 << 2);
+                let up19 = (page_addr & 0b111111111111111111100) >> 2;
                 let lo2 = page_addr & 0b11;
 
                 (0b1_00_10000 << 24) | (lo2 << 29) | (up19 << 5) | dest

@@ -7,7 +7,7 @@ use crate::{
         },
         semantics::{Sign, ValidAST},
     },
-    ir::{BasicBlock, Condition, IR, Item, Label, Op, OpIndex, SourceVal, Terminator, VirtualReg},
+    ir::{BasicBlock, Condition, IR, Item, Label, Op, SourceVal, Terminator, VirtualReg},
 };
 
 impl IR {
@@ -17,30 +17,37 @@ impl IR {
         let mut ir = IR::default();
 
         for item in ast.items {
-            if let AstItem::Function {
-                name, body, args, ..
-            } = item
-            {
-                println!("-- {} --", name);
-                let initial_args: Vec<_> = args
-                    .into_iter()
-                    .enumerate()
-                    .map(|(i, (name, _, _))| (name, VirtualReg(i as u32)))
-                    .collect();
+            match item {
+                AstItem::Function {
+                    name, body, args, ..
+                } => {
+                    println!("-- {} --", name);
+                    let initial_args: Vec<_> = args
+                        .into_iter()
+                        .enumerate()
+                        .map(|(i, (name, _, _))| (name, VirtualReg(i as u32)))
+                        .collect();
 
-                let vreg_args = initial_args.iter().map(|(_, vreg)| *vreg).collect();
+                    let vreg_args = initial_args.iter().map(|(_, vreg)| *vreg).collect();
 
-                let (body, stack, stack_size) =
-                    BlockBuilder::new(&mut ir, initial_args).build(body);
+                    let (body, stack, stack_size) =
+                        BlockBuilder::new(&mut ir, initial_args).build(body);
 
-                ir.items.push(Item::Function {
-                    name,
-                    args: vreg_args,
-                    stack,
-                    stack_size,
-                    body,
-                });
-            };
+                    ir.items.push(Item::Function {
+                        name,
+                        args: vreg_args,
+                        stack,
+                        stack_size,
+                        body,
+                    });
+                }
+
+                AstItem::MemorySegment { name, typ } => {
+                    ir.static_mem.alloc(name, typ);
+                }
+
+                AstItem::ForwardDecl { .. } | AstItem::ExternLib(_) => {}
+            }
         }
 
         // if let Err(dupes) = crate::ir::ssa::verify_ssa(&ir) {
@@ -178,13 +185,32 @@ impl<'ir> BlockBuilder<'ir> {
 
                     match var {
                         Assignable::Var(var) => {
-                            let (dest, stack_offset) = self.get_or_insert_stack_var(var);
+                            if let Some((offset, typ)) = self.ir.static_mem.get(&var) {
+                                let offset = *offset;
+                                let typ = typ.clone();
 
-                            self.block_ops.push(Op::Assign { src, dest });
-                            self.block_ops.push(Op::Store {
-                                src: SourceVal::VReg(dest),
-                                stack_offset,
-                            });
+                                let ptr = self.get_vreg();
+                                let src = self.src_to_vreg(src);
+
+                                println!("offset: {}", offset);
+                                self.block_ops.push(Op::Assign {
+                                    src: SourceVal::StaticMem(offset),
+                                    dest: ptr,
+                                });
+                                self.block_ops.push(Op::StorePointer {
+                                    src,
+                                    ptr,
+                                    size: typ.size(),
+                                });
+                            } else {
+                                let (dest, stack_offset) = self.get_or_insert_stack_var(var);
+
+                                self.block_ops.push(Op::Assign { src, dest });
+                                self.block_ops.push(Op::Store {
+                                    src: SourceVal::VReg(dest),
+                                    stack_offset,
+                                });
+                            }
                         }
                         Assignable::Ptr(var, size) => {
                             let var_vreg = self.var_to_vreg.get(&var).copied().unwrap();
@@ -525,6 +551,24 @@ impl<'ir> BlockBuilder<'ir> {
     }
 
     fn load_var(&mut self, var: &str, dest: VirtualReg) {
+        if let Some((offset, typ)) = self.ir.static_mem.get(var) {
+            let offset = *offset;
+            let typ = typ.clone();
+
+            let ptr = self.get_vreg();
+            self.block_ops.push(Op::Assign {
+                src: SourceVal::StaticMem(offset),
+                dest: ptr,
+            });
+            self.block_ops.push(Op::LoadPointer {
+                ptr,
+                size: typ.size(),
+                dest,
+            });
+
+            return;
+        }
+
         let vreg = *self.var_to_vreg.get(var).unwrap();
 
         println!("Load var {} ({})", var, vreg);
@@ -532,6 +576,8 @@ impl<'ir> BlockBuilder<'ir> {
         if let Some(&offset) = self.proc_args.get(&vreg) {
             println!("=> it is a function argument at offset {}", offset);
             self.block_ops.push(Op::LoadArg { offset, dest });
+        } else if let Some(offset) = self.ir.static_mem.get(var) {
+            todo!()
         } else {
             let offset = self.get_stack_offset(var);
             println!("=> it is a stack variable at offset {}", offset);
@@ -546,6 +592,10 @@ impl<'ir> BlockBuilder<'ir> {
         &mut self,
         var: S,
     ) -> (VirtualReg, u32) {
+        if self.ir.static_mem.get(var.as_ref()).is_some() {
+            panic!()
+        }
+
         let v: String = var.as_ref().to_owned();
 
         let vreg = self
@@ -594,7 +644,7 @@ impl<'ir> BlockBuilder<'ir> {
 
     fn src_to_vreg(&mut self, src: SourceVal) -> VirtualReg {
         match src {
-            SourceVal::Immediate(_) | SourceVal::String(_) => {
+            SourceVal::Immediate(_) | SourceVal::String(_) | SourceVal::StaticMem(_) => {
                 let dest = self.get_vreg();
                 self.block_ops.push(Op::Assign { src, dest });
                 dest

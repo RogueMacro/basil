@@ -4,7 +4,7 @@ use std::{
     fmt,
 };
 
-use crate::analyze::ast::CompareOp;
+use crate::analyze::{ast::CompareOp, semantics::SemanticType};
 
 pub mod codegen;
 pub mod lifetime;
@@ -14,6 +14,7 @@ pub mod ssa;
 pub struct IR {
     pub items: Vec<Item>,
     pub strings: HashMap<String, StrId>,
+    pub static_mem: StaticMemory,
 }
 
 impl IR {
@@ -23,14 +24,31 @@ impl IR {
     }
 }
 
+#[derive(Default)]
+pub struct StaticMemory {
+    allocs: HashMap<String, (u64, SemanticType)>,
+    size: u64,
+}
+
+impl StaticMemory {
+    pub fn new() -> Self {
+        Default::default()
+    }
+
+    pub fn alloc(&mut self, name: String, typ: SemanticType) -> u64 {
+        let offset = self.size;
+        self.size += typ.size().to_u64();
+        self.allocs.insert(name, (offset, typ));
+        offset
+    }
+
+    pub fn get(&self, name: &str) -> Option<&(u64, SemanticType)> {
+        self.allocs.get(name)
+    }
+}
+
 pub type StrId = usize;
 pub type OpIndex = usize;
-
-// #[derive(Debug, Clone, Copy)]
-// pub enum StackSlot {
-//     Local(u32),
-//     FnArg(u32),
-// }
 
 pub enum Item {
     Function {
@@ -95,6 +113,18 @@ pub enum VarSize {
     B16,
     B32,
     B64,
+}
+
+impl VarSize {
+    pub fn to_u64(&self) -> u64 {
+        match self {
+            VarSize::Zero => 0,
+            VarSize::B8 => 8,
+            VarSize::B16 => 16,
+            VarSize::B32 => 32,
+            VarSize::B64 => 64,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -372,6 +402,7 @@ pub enum SourceVal {
     Immediate(u64),
     VReg(VirtualReg),
     String(StrId),
+    StaticMem(u64),
 }
 
 impl SourceVal {
@@ -390,6 +421,7 @@ impl fmt::Display for SourceVal {
             SourceVal::Immediate(n) => write!(f, "{}", n),
             SourceVal::VReg(vreg) => write!(f, "{}", vreg),
             SourceVal::String(str_id) => write!(f, "string #{}", str_id),
+            SourceVal::StaticMem(offset) => write!(f, "mem +{}", offset),
         }
     }
 }

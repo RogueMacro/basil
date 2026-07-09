@@ -26,6 +26,7 @@ struct Analyzer {
     err_ctx: ErrorContext,
 
     variables: HashMap<String, SemanticType>,
+    globals: HashMap<String, SemanticType>,
     functions: HashMap<String, (Span, SemanticType, Vec<(Span, SemanticType)>)>,
     function_calls: HashMap<String, HashSet<String>>,
     fn_call_context: HashSet<String>,
@@ -36,6 +37,7 @@ impl Analyzer {
         Self {
             err_ctx: ErrorContext::new(),
             variables: HashMap::new(),
+            globals: HashMap::new(),
             functions: HashMap::new(),
             function_calls: HashMap::new(),
             fn_call_context: HashSet::new(),
@@ -44,35 +46,40 @@ impl Analyzer {
 
     pub fn analyze(mut self, ast: &mut AST) -> Result<(), ErrorVec> {
         for item in &ast.items {
-            if let Item::Function {
-                name,
-                ret_type,
-                decl_span,
-                args,
-                ..
-            }
-            | Item::ForwardDecl {
-                name,
-                ret_type,
-                decl_span,
-                args,
-            } = item
-            {
-                let args = args
-                    .iter()
-                    .map(|(_, typ, span)| (span.clone(), typ.clone()))
-                    .collect();
+            match item {
+                Item::Function {
+                    name,
+                    ret_type,
+                    decl_span,
+                    args,
+                    ..
+                }
+                | Item::ForwardDecl {
+                    name,
+                    ret_type,
+                    decl_span,
+                    args,
+                } => {
+                    let args = args
+                        .iter()
+                        .map(|(_, typ, span)| (span.clone(), typ.clone()))
+                        .collect();
 
-                if let Some((other_decl_span, _, _)) = self.functions.insert(
-                    name.to_owned(),
-                    (decl_span.clone(), ret_type.to_owned(), args),
-                ) {
-                    self.err_ctx
-                        .error(decl_span.clone())
-                        .with_message("duplicate function definition")
-                        .with_label(decl_span.clone(), "defined here")
-                        .with_label(other_decl_span.clone(), "first defined here")
-                        .report();
+                    if let Some((other_decl_span, _, _)) = self.functions.insert(
+                        name.to_owned(),
+                        (decl_span.clone(), ret_type.to_owned(), args),
+                    ) {
+                        self.err_ctx
+                            .error(decl_span.clone())
+                            .with_message("duplicate function definition")
+                            .with_label(decl_span.clone(), "defined here")
+                            .with_label(other_decl_span.clone(), "first defined here")
+                            .report();
+                    }
+                }
+                Item::ExternLib(_) => {}
+                Item::MemorySegment { name, typ } => {
+                    self.globals.insert(name.clone(), typ.clone());
                 }
             }
         }
@@ -102,6 +109,7 @@ impl Analyzer {
             Item::Function { name, .. } => used_functions.contains(name),
             Item::ForwardDecl { .. } => false,
             Item::ExternLib(_) => false,
+            Item::MemorySegment { .. } => true,
         });
 
         // for item in &ast.items {
@@ -156,6 +164,7 @@ impl Analyzer {
             }
             Item::ForwardDecl { .. } => {}
             Item::ExternLib(_lib) => (), // TODO: maybe?
+            Item::MemorySegment { .. } => {}
         }
     }
 
@@ -581,7 +590,7 @@ impl Analyzer {
     }
 
     fn check_var(&mut self, symbol: &str, span: &Span) -> Option<SemanticType> {
-        if let Some(typ) = self.variables.get(symbol) {
+        if let Some(typ) = self.variables.get(symbol).or(self.globals.get(symbol)) {
             return Some(typ.clone());
         }
 

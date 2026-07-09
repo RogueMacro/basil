@@ -10,8 +10,12 @@ impl<A: Assembler> LinkableCode<A> {
         self.0.code_size()
     }
 
-    pub fn link(self, str_literal_offset: usize) -> MachineCode {
-        self.0.into_machine_code(str_literal_offset)
+    pub fn str_literals(&self) -> &[String] {
+        self.0.str_literals()
+    }
+
+    pub fn link(self, str_literal_offset: usize, bss_offset: u64) -> MachineCode {
+        self.0.into_machine_code(str_literal_offset, bss_offset)
     }
 }
 
@@ -28,5 +32,7 @@ pub trait Assembler: Sized {
 
     fn code_size(&self) -> usize;
 
-    fn into_machine_code(self, str_literal_offset: usize) -> MachineCode;
+    fn str_literals(&self) -> &[String];
+
+    fn into_machine_code(self, str_literal_offset: usize, bss_offset: u64) -> MachineCode;
 }

@@ -48,6 +48,8 @@ impl Executable for AppleExecutable {
         // LC_SEGMENT (__TEXT)
         // __text section header
         // __cstring section header
+        // LC_SEGMENT (__DATA)
+        // __bss section header
         // LC_MAIN
         // LC_LOAD_DYLINKER
         // LC_SEGMENT_64 (__LINKEDIT)
@@ -76,6 +78,8 @@ impl Executable for AppleExecutable {
             + size_of::<SegmentCommand>() // __TEXT
             + size_of::<SectionHeader>() // __TEXT,__text
             + size_of::<SectionHeader>() // __TEXT,__cstring
+            + size_of::<SegmentCommand>() // __DATA
+            + size_of::<SectionHeader>() // __DATA,__bss
             + size_of::<EntryPointCommand>() // LcEntryPoint
             + dylinker.command_size as usize
             + size_of::<SegmentCommand>()
@@ -84,7 +88,13 @@ impl Executable for AppleExecutable {
             + size_of::<SymTabCommand>();
 
         let code_size = code.size();
-        let code = code.link(text_data_offset + code_size);
+        let str_literal_size: usize = code.str_literals().iter().map(|s| s.len() + 1).sum();
+
+        let str_literal_offset = text_data_offset + code_size;
+        let text_segment_end = page_align(text_data_offset as u64 + code_size as u64);
+        let bss_offset = text_segment_end;
+        println!("bss_offset: 0x{:x}", bss_offset);
+        let code = code.link(str_literal_offset, bss_offset);
 
         let MachineCode {
             instructions,
@@ -138,7 +148,6 @@ impl Executable for AppleExecutable {
             _reserved3: 0,
         };
 
-        let str_literal_size: usize = str_literals.iter().map(|s| s.len() + 1).sum();
         let mut cstring_section_header = SectionHeader {
             section_name: b"__cstring\0\0\0\0\0\0\0".to_owned(),
             segment_name: b"__TEXT\0\0\0\0\0\0\0\0\0\0".to_owned(),
@@ -154,6 +163,49 @@ impl Executable for AppleExecutable {
             _reserved3: 0,
         };
 
+        text_section_header.offset = text_data_offset as u32;
+        text_section_header.addr = text_segment.vmaddr;
+        cstring_section_header.offset =
+            text_section_header.offset + text_section_header.size as u32;
+        cstring_section_header.addr = text_section_header.addr + text_section_header.size;
+
+        text_segment.file_size = text_segment_end;
+        text_segment.vmsize = text_segment_end;
+
+        let text_seg_padding = text_segment_end as usize
+            - cstring_section_header.offset as usize
+            - cstring_section_header.size as usize;
+
+        let data_segment_size = (size_of::<SegmentCommand>() + size_of::<SectionHeader>()) as u32;
+        let data_segment = SegmentCommand {
+            command: LoadCommand::Segment,
+            command_size: data_segment_size,
+            segment_name: b"__DATA\0\0\0\0\0\0\0\0\0\0".to_owned(),
+            vmaddr: text_segment.vmaddr + text_segment.vmsize,
+            vmsize: 0x4000,
+            file_offset: 0x0,
+            file_size: 0x0,
+            max_prot: MemoryPermissions::ReadWrite,
+            init_prot: MemoryPermissions::ReadWrite,
+            section_count: 1,
+            flags: 0,
+        };
+
+        let bss_section_header = SectionHeader {
+            section_name: b"__bss\0\0\0\0\0\0\0\0\0\0\0".to_owned(),
+            segment_name: b"__DATA\0\0\0\0\0\0\0\0\0\0".to_owned(),
+            addr: data_segment.vmaddr,
+            size: 64,
+            offset: 0,
+            align: 3,
+            reloff: 0,
+            nreloc: 0,
+            flags: SectionFlags::ZeroFill,
+            _reserved1: 0,
+            _reserved2: 0,
+            _reserved3: 0,
+        };
+
         let mut entry_point = EntryPointCommand {
             command: LoadCommand::EntryPoint,
             command_size: size_of::<EntryPointCommand>() as u32,
@@ -161,27 +213,13 @@ impl Executable for AppleExecutable {
             stack_size: 0,
         };
 
-        text_section_header.offset = text_data_offset as u32;
-        text_section_header.addr = text_segment.vmaddr;
-        cstring_section_header.offset =
-            text_section_header.offset + text_section_header.size as u32;
-        cstring_section_header.addr = text_section_header.addr + text_section_header.size;
         entry_point.main_offset += text_section_header.offset as u64;
-
-        let text_section_end =
-            page_align(text_section_header.offset as u64 + text_section_header.size);
-        text_segment.file_size = text_section_end;
-        text_segment.vmsize = text_section_end;
-
-        let text_seg_padding = text_section_end as usize
-            - cstring_section_header.offset as usize
-            - cstring_section_header.size as usize;
 
         let mut linkedit_segment = SegmentCommand {
             command: LoadCommand::Segment,
             command_size: size_of::<SegmentCommand>() as u32,
             segment_name: b"__LINKEDIT\0\0\0\0\0\0".to_owned(),
-            vmaddr: text_segment.vmaddr + text_segment.vmsize,
+            vmaddr: data_segment.vmaddr + data_segment.vmsize,
             vmsize: 0x4000,
             file_offset: 0, // filled in later
             file_size: 0,   // filled in later
@@ -235,9 +273,10 @@ impl Executable for AppleExecutable {
             cpu_type: mach_o::CpuType::Arm64,
             cpu_subtype: mach_o::CpuSubtype::Arm,
             file_type: mach_o::FileType::Execute,
-            load_cmd_count: 8,
+            load_cmd_count: 9,
             load_cmd_size: pagezero_segment.command_size
                 + text_segment.command_size
+                + data_segment.command_size
                 + entry_point.command_size
                 + dylinker.command_size
                 + linkedit_segment.command_size
@@ -275,7 +314,7 @@ impl Executable for AppleExecutable {
 
         let nlists_size = size_of::<NList>() * nlists.len();
 
-        linkedit_segment.file_offset = text_section_end;
+        linkedit_segment.file_offset = text_segment_end;
         linkedit_segment.file_size = (codesign.len() + nlists_size + str_table_size) as u64;
 
         symtab.symoff = linkedit_segment.file_offset as u32;
@@ -292,6 +331,8 @@ impl Executable for AppleExecutable {
         vec.extend(bytes_of(&text_segment));
         vec.extend(bytes_of(&text_section_header));
         vec.extend(bytes_of(&cstring_section_header));
+        vec.extend(bytes_of(&data_segment));
+        vec.extend(bytes_of(&bss_section_header));
         vec.extend(bytes_of(&entry_point));
         vec.extend(bytes_of(&dylinker));
         vec.extend(&padded_linker_path);

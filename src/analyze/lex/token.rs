@@ -144,6 +144,7 @@ pub enum Keyword {
     While,
     For,
     In,
+    Memory,
 }
 
 impl Keyword {
@@ -158,6 +159,7 @@ impl Keyword {
             "while" => Keyword::While,
             "for" => Keyword::For,
             "in" => Keyword::In,
+            "memory" => Keyword::Memory,
             _ => return None,
         };
 

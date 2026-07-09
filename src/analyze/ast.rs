@@ -41,6 +41,7 @@ impl AST {
                     *name = format!("{}::{}", lib, name)
                 }
                 Item::ExternLib(_) => (),
+                Item::MemorySegment { .. } => (),
             }
         }
     }
@@ -62,6 +63,10 @@ pub enum Item {
         decl_span: Span,
     },
     ExternLib(String),
+    MemorySegment {
+        name: String,
+        typ: SemanticType,
+    },
 }
 
 #[derive(Debug)]

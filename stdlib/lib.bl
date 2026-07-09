@@ -1,6 +1,12 @@
 // file descriptors:
 // stdout = 1
 
+memory arena: &i64;
+memory arena_size: i64;
+memory arena_offset: i64;
+memory arena_init: bool;
+
+
 fn print(buf: &char) {
     std::write(1, buf, std::strlen(buf));
 }
@@ -34,6 +40,76 @@ fn exit(status: i64);
 fn mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64) -> &i64;
 
 fn alloc(bytes: i64) -> &i64 {
+  if !arena_init {
+    arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
+    arena_size = 0;
+    arena_init = true;
+  }
+
   return std::mmap(0 as &(), bytes, 3, 4098, -1, 0);
+}
+
+fn i64tos(number: i64) -> &char {
+  _n := number;
+  n_chars := 0;
+
+  negative := false;
+  if number < 0 {
+    negative = true;
+    n_chars = n_chars + 1;
+    _n = 0 - _n;
+  }
+
+  n := _n;
+  while n > 0 {
+      n_chars = n_chars + 1;
+      n = n / 10;
+  }
+
+  str := std::alloc(n_chars + 1) as &char;
+  i := n_chars - 1;
+  n = _n;
+
+  while n > 0 {
+      c := n % 10 + 48;
+      str[i as u64] = c as char;
+
+      n = n / 10;
+      i = i - 1;
+  }
+
+  if negative {
+    str[0] = '-';
+  }
+
+  if number == 0 {
+    str[0] = '0';
+  }
+
+  str[n_chars as u64 + 1] = '\0';
+  return str;
+}
+
+fn balloc_init() {
+  arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
+  arena_size = 4096;
+  arena_offset = 0;
+  arena_init = true;
+}
+
+fn balloc(bytes: i64) -> &i64 {
+  if !arena_init {
+    std::println("balloc is not initialized");
+    std::exit(-1);
+  }
+
+  if bytes > arena_size {
+    arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
+    arena_offset = 0;
+  }
+
+  ptr := ((arena as i64) + arena_offset) as &i64;
+  arena_offset = arena_offset + bytes;
+  return ptr;
 }
 
