@@ -39,16 +39,6 @@ fn exit(status: i64);
 
 fn mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64) -> &i64;
 
-fn alloc(bytes: i64) -> &i64 {
-  if !arena_init {
-    arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
-    arena_size = 0;
-    arena_init = true;
-  }
-
-  return std::mmap(0 as &(), bytes, 3, 4098, -1, 0);
-}
-
 fn i64tos(number: i64) -> &char {
   _n := number;
   n_chars := 0;
@@ -56,14 +46,14 @@ fn i64tos(number: i64) -> &char {
   negative := false;
   if number < 0 {
     negative = true;
-    n_chars = n_chars + 1;
-    _n = 0 - _n;
+    n_chars += 1;
+    _n = -_n;
   }
 
   n := _n;
   while n > 0 {
-      n_chars = n_chars + 1;
-      n = n / 10;
+      n_chars += 1;
+      n /= 10;
   }
 
   str := std::alloc(n_chars + 1) as &char;
@@ -74,8 +64,8 @@ fn i64tos(number: i64) -> &char {
       c := n % 10 + 48;
       str[i as u64] = c as char;
 
-      n = n / 10;
-      i = i - 1;
+      n /= 10;
+      i -= 1;
   }
 
   if negative {
@@ -90,22 +80,15 @@ fn i64tos(number: i64) -> &char {
   return str;
 }
 
-fn balloc_init() {
-  arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
-  arena_size = 4096;
-  arena_offset = 0;
-  arena_init = true;
+fn alloc_init() {
 }
 
-fn balloc(bytes: i64) -> &i64 {
-  if !arena_init {
-    std::println("balloc is not initialized");
-    std::exit(-1);
-  }
-
-  if bytes > arena_size {
+fn alloc(bytes: i64) -> &i64 {
+  if !arena_init || bytes > arena_size - arena_offset {
     arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
+    arena_size = 4096;
     arena_offset = 0;
+    arena_init = true;
   }
 
   ptr := ((arena as i64) + arena_offset) as &i64;
