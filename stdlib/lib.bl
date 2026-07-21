@@ -1,9 +1,9 @@
 // file descriptors:
 // stdout = 1
 
-memory arena: &i64;
-memory arena_size: i64;
-memory arena_offset: i64;
+memory arena: &i8;
+memory arena_size: u64;
+memory arena_offset: u64;
 memory arena_init: bool;
 
 
@@ -37,11 +37,11 @@ fn write(fd: i64, buf: &char, count: i64) -> i64;
 
 fn exit(status: i64);
 
-fn mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64) -> &i64;
+fn mmap(addr: &(), len: i64, prot: i64, flags: i64, file_desc: i64, offset: i64) -> &i8;
 
-fn i64tos(number: i64) -> &char {
+fn itos(number: i64) -> &char {
   _n := number;
-  n_chars := 0;
+  n_chars := 0u64;
 
   negative := false;
   if number < 0 {
@@ -62,7 +62,7 @@ fn i64tos(number: i64) -> &char {
 
   while n > 0 {
       c := n % 10 + 48;
-      str[i as u64] = c as char;
+      str[i] = c as char;
 
       n /= 10;
       i -= 1;
@@ -76,23 +76,20 @@ fn i64tos(number: i64) -> &char {
     str[0] = '0';
   }
 
-  str[n_chars as u64 + 1] = '\0';
+  str[n_chars + 1] = '\0';
   return str;
 }
 
-fn alloc_init() {
-}
-
-fn alloc(bytes: i64) -> &i64 {
+fn alloc(bytes: u64) -> &i8 {
   if !arena_init || bytes > arena_size - arena_offset {
     arena = std::mmap(0 as &(), 4096, 3, 4098, -1, 0);
-    arena_size = 4096;
-    arena_offset = 0;
+    arena_size = 4096u64;
+    arena_offset = 0u64;
     arena_init = true;
   }
 
-  ptr := ((arena as i64) + arena_offset) as &i64;
-  arena_offset = arena_offset + bytes;
+  ptr := (arena as u64 + arena_offset) as &i8;
+  arena_offset += bytes;
   return ptr;
 }
 

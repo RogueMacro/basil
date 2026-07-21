@@ -74,9 +74,9 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
             ast.items.extend(lib_ast.items);
         }
 
-        let ast = semantics::analyze(ast)?;
+        let (ast, analyzer) = semantics::analyze(ast)?;
 
-        let ir = IR::generate(ast);
+        let ir = IR::generate(ast, &analyzer);
         println!("{}", ir);
 
         let code = A::assemble(ir);

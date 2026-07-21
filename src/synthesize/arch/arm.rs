@@ -1,11 +1,12 @@
 use std::assert_matches;
 use std::collections::HashMap;
 
+use colored::Colorize;
 use ux::{i7, i12, i19, i26, u9, u12, u48};
 
 use crate::{
     ir::{
-        BasicBlock, Condition, IR, Item, Label, Op, SourceVal, StrId, Terminator, VarSize,
+        BasicBlock, Condition, IR, Item, Label, Op, SourceVal, StrId, Terminator, ValSize,
         VirtualReg,
     },
     synthesize::arch::{
@@ -13,8 +14,8 @@ use crate::{
         arm::{
             builtin::SyscallType,
             instr::{
-                AddImmVal, BranchOffset, EitherReg, FnOffset, ImmShift16, Inst, Instruction,
-                PageAddr, StoreSize,
+                AddImmVal, BranchOffset, EitherOffset, EitherReg, FnOffset, ImmShift16, Inst,
+                Instruction, PageAddr,
             },
             reg::Register,
         },
@@ -62,6 +63,7 @@ impl Assembler for ArmAssembler {
                 args,
                 stack,
                 stack_size,
+                size_map,
                 body,
             } = item;
 
@@ -71,7 +73,7 @@ impl Assembler for ArmAssembler {
             assembler.code.symbols.push((name.clone(), offset * 4));
             assembler.functions.insert(name, offset as usize);
 
-            ProcedureGen::assemble(&mut assembler, stack, stack_size, body);
+            ProcedureGen::assemble(&mut assembler, stack, stack_size, &size_map, body);
         }
 
         println!("-- BUILTIN --");
@@ -122,6 +124,7 @@ impl Assembler for ArmAssembler {
                     .enumerate()
                     .flat_map(|(i, mut inst)| {
                         inst.link(i as i32, &self.functions, str_table_offset, bss_offset);
+                        println!("[0x{:<4x}] {:?}", i * 4, inst);
                         inst.encode().to_le_bytes()
                     }),
             );
@@ -163,6 +166,7 @@ impl ProcedureGen {
         assembler: &mut ArmAssembler,
         stack: HashMap<VirtualReg, u32>,
         stack_size: u32,
+        size_map: &HashMap<VirtualReg, ValSize>,
         body: Vec<BasicBlock>,
     ) {
         let mut proc = ProcedureGen::default();
@@ -249,27 +253,48 @@ impl ProcedureGen {
                             panic!()
                         };
 
+                        let size = *size_map.get(&source).unwrap();
+
                         proc.emit(Inst::Store {
                             source,
                             base: EitherReg::Phys(Register::SP),
-                            offset: u12::new(stack_offset as u16 / 8),
-                            size: StoreSize::Doubleword,
+                            offset: EitherOffset::Imm(u12::new(
+                                stack_offset as u16 / size.to_bytes() as u16,
+                            )),
+                            size,
                         });
                     }
                     Op::Load { stack_offset, dest } => {
-                        println!("load {} => {}", stack_offset, dest);
+                        let size = *size_map.get(&dest).unwrap();
+
                         proc.emit(Inst::Load {
                             base: EitherReg::Phys(Register::SP),
-                            offset: u12::new(stack_offset as u16 / 8),
+                            offset: EitherOffset::Imm(u12::new(
+                                stack_offset as u16 / size.to_bytes() as u16,
+                            )),
                             dest,
+                            size,
+                        });
+                    }
+                    Op::LoadOffset { base, offset, dest } => {
+                        let size = *size_map.get(&dest).unwrap();
+
+                        proc.emit(Inst::Load {
+                            base: EitherReg::Virt(base),
+                            offset: EitherOffset::Imm(u12::new(
+                                offset as u16 / size.to_bytes() as u16,
+                            )),
+                            dest,
+                            size,
                         });
                     }
                     Op::LoadArg { offset, dest } => {
                         println!("Load arg: {} => {}", offset, dest);
                         proc.emit(Inst::Load {
                             base: EitherReg::Phys(Register::FP),
-                            offset: u12::new(2 + offset as u16),
+                            offset: EitherOffset::Imm(u12::new(2 + offset as u16)),
                             dest,
+                            size: *size_map.get(&dest).unwrap(),
                         });
                     }
                     Op::AddressOf { val, dest } => {
@@ -288,32 +313,24 @@ impl ProcedureGen {
                         imm: AddImmVal::Fixed(u12::new(16 + offset as u16)),
                         dest: EitherReg::Virt(dest),
                     }),
-                    Op::LoadPointer { ptr, size, dest } => match size {
-                        VarSize::B64 => proc.emit(Inst::Load {
-                            base: EitherReg::Virt(ptr),
-                            offset: u12::new(0),
-                            dest,
-                        }),
-                        VarSize::B8 => proc.emit(Inst::LoadByte {
-                            base: ptr,
-                            offset: u9::new(0),
-                            dest,
-                        }),
-                        _ => todo!(),
-                    },
-                    Op::StorePointer { src, ptr, size } => {
-                        let size = match size {
-                            VarSize::Zero => todo!(),
-                            VarSize::B8 => StoreSize::Byte,
-                            VarSize::B16 => todo!(),
-                            VarSize::B32 => todo!(),
-                            VarSize::B64 => StoreSize::Doubleword,
-                        };
-
+                    Op::LoadPointer { ptr, size, dest } => proc.emit(Inst::Load {
+                        base: EitherReg::Virt(ptr),
+                        offset: EitherOffset::Imm(u12::new(0)),
+                        dest,
+                        size,
+                    }),
+                    Op::StorePointer {
+                        src,
+                        ptr,
+                        size,
+                        offset,
+                    } => {
                         proc.emit(Inst::Store {
                             source: src,
                             base: EitherReg::Virt(ptr),
-                            offset: u12::new(0),
+                            offset: EitherOffset::Imm(u12::new(
+                                offset as u16 / size.to_bytes() as u16,
+                            )),
                             size,
                         });
                     }
@@ -394,8 +411,8 @@ impl ProcedureGen {
                             proc.emit(Inst::Store {
                                 source: *arg,
                                 base: EitherReg::Phys(Register::SP),
-                                offset: u12::new(i as u16),
-                                size: StoreSize::Doubleword,
+                                offset: EitherOffset::Imm(u12::new(i as u16)),
+                                size: ValSize::Doubleword,
                             });
                         }
 
@@ -454,7 +471,8 @@ impl ProcedureGen {
             proc.instructions[first_op_index].1 = InstMarker::FirstInBB(bb.label);
         }
 
-        let (instructions, extra_stack_size) = reg::allocate(proc.instructions, stack_size as u16);
+        let (instructions, extra_stack_size) =
+            reg::allocate(proc.instructions, stack_size as u16, size_map);
 
         let mut label_map = HashMap::from_iter([(Label::End, instructions.len() as i32)]);
         for (i, (_, marker)) in instructions.iter().enumerate() {

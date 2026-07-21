@@ -81,6 +81,8 @@ pub enum Operator {
 
     And,
     Or,
+
+    Dot,
 }
 
 impl Operator {
@@ -105,6 +107,8 @@ impl Operator {
 
             ('!', _) => (Self::Not, false),
 
+            ('.', _) => (Self::Dot, false),
+
             _ => return None,
         };
 
@@ -121,6 +125,7 @@ impl Operator {
             Plus | Minus => 3,
             Star | Slash | Modulo => 4,
             Not => 5,
+            Dot => 6,
         }
     }
 
@@ -149,6 +154,9 @@ pub enum Keyword {
     For,
     In,
     Memory,
+    Struct,
+    Impl,
+    SizeOf,
 }
 
 impl Keyword {
@@ -164,6 +172,9 @@ impl Keyword {
             "for" => Keyword::For,
             "in" => Keyword::In,
             "memory" => Keyword::Memory,
+            "struct" => Keyword::Struct,
+            "impl" => Keyword::Impl,
+            "sizeof" => Keyword::SizeOf,
             _ => return None,
         };
 

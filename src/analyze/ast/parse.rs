@@ -3,7 +3,7 @@ use std::{ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, ErrorVec, Span,
     ast::{
-        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, Item, LogicalOp,
+        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, FnDef, Item, LogicalOp,
         SemanticType, Statement,
     },
     lex::{
@@ -41,8 +41,6 @@ impl Parser {
             return Err(errors);
         }
 
-        // println!("{:#?}", ast);
-
         Ok(ast)
     }
 
@@ -79,11 +77,103 @@ impl Parser {
             Keyword::Use => unimplemented!(),
             Keyword::Extern => self.parse_extern(),
             Keyword::Memory => self.parse_memory(),
+            Keyword::Struct => self.parse_struct(),
+            Keyword::Impl => self.parse_impl(),
             _ => Err(self
                 .err_ctx
                 .unexpected_token(self.span(range), "expected function or extern import")
                 .finish()),
         }
+    }
+
+    fn parse_impl(&mut self) -> Result<Item, Error> {
+        let (token, decl_range) = self.expect_take_current()?;
+        let decl_span = self.span(decl_range);
+        let Token::Ident(struct_name) = token else {
+            return Err(self
+                .err_ctx
+                .error(decl_span.clone())
+                .with_message("invalid struct definition")
+                .with_label(decl_span, "expected type name")
+                .finish());
+        };
+
+        self.expect_token(Token::LeftCurlyBracket, "expected opening curly bracket")?;
+
+        let mut functions = Vec::new();
+        while let Some((Token::Keyword(Keyword::Function), range)) = self.lexer.current() {
+            let decl_start = range.start;
+            self.lexer.lex_one();
+            let func = self.parse_function(decl_start)?;
+            let Item::Function(fndef) = func else {
+                let span = self.span(decl_start..self.lexer.last_token_end());
+                return Err(self
+                    .err_ctx
+                    .error(span.clone())
+                    .with_message("invalid function definition")
+                    .with_label(span, "only function implementations allowed")
+                    .finish());
+            };
+
+            functions.push(fndef);
+        }
+
+        self.expect_token(Token::RightCurlyBracket, "expected closing curly bracket")?;
+
+        Ok(Item::Impl {
+            struct_name,
+            functions,
+        })
+    }
+
+    fn parse_struct(&mut self) -> Result<Item, Error> {
+        let (token, decl_range) = self.expect_take_current()?;
+        let decl_span = self.span(decl_range);
+        let Token::Ident(name) = token else {
+            return Err(self
+                .err_ctx
+                .error(decl_span.clone())
+                .with_message("invalid struct definition")
+                .with_label(decl_span, "expected type name")
+                .finish());
+        };
+
+        self.expect_token(Token::LeftCurlyBracket, "expected opening curly bracket")?;
+
+        let mut fields = Vec::new();
+
+        while !matches!(self.lexer.current(), Some((Token::RightCurlyBracket, _))) {
+            let (token, range) = self.expect_take_current()?;
+            let Token::Ident(field_name) = token else {
+                let span = self.span(range);
+                return Err(self
+                    .err_ctx
+                    .error(span.clone())
+                    .with_message("invalid struct field")
+                    .with_label(span, "expected field name")
+                    .finish());
+            };
+
+            self.expect_token(Token::Colon, "expected colon")?;
+
+            let field_type = self.parse_type()?;
+
+            let field_span = self.span(range.start..self.lexer.last_token_end());
+
+            if matches!(self.lexer.current(), Some((Token::Comma, _))) {
+                self.lexer.lex_one()?;
+            }
+
+            fields.push((field_name, field_type, field_span));
+        }
+
+        self.expect_token(Token::RightCurlyBracket, "expected closing curly bracket")?;
+
+        Ok(Item::Struct {
+            name,
+            decl_span,
+            fields,
+        })
     }
 
     fn parse_memory(&mut self) -> Result<Item, Error> {
@@ -98,33 +188,6 @@ impl Parser {
                 .finish());
         };
 
-        // self.expect_token(Token::LeftBracket, "expected opening bracket")?;
-        //
-        // let (token, range) = self.expect_take_current()?;
-        // let Token::Number(length, explicit_type) = token else {
-        //     let span = self.span(range);
-        //     return Err(self
-        //         .err_ctx
-        //         .error(span.clone())
-        //         .with_message("invalid memory statement")
-        //         .with_label(span, "expected segment length")
-        //         .finish());
-        // };
-        //
-        // if explicit_type
-        //     .and_then(|t| t.sign())
-        //     .is_some_and(|s| s != Sign::Unsigned)
-        // {
-        //     let span = self.span(range);
-        //     return Err(self
-        //         .err_ctx
-        //         .error(span.clone())
-        //         .with_message("invalid memory statement")
-        //         .with_label(span, "segment length must be an unsigned integer")
-        //         .finish());
-        // }
-        //
-        // self.expect_token(Token::RightBracket, "expected closing bracket")?;
         self.expect_token(Token::Colon, "expected memory segment type")?;
 
         let typ = self.parse_type()?;
@@ -182,9 +245,11 @@ impl Parser {
             "expected argument or closing parenthesis",
         )?;
 
+        let mut ret_type_begin = decl_start;
         let ret_type = match self.lexer.current() {
             Some((Token::Arrow, _)) => {
                 self.lexer.lex_one()?;
+                ret_type_begin = self.lexer.cur_token_start();
                 self.parse_type()?
             }
             _ => SemanticType::Unit,
@@ -192,6 +257,7 @@ impl Parser {
 
         let decl_end = self.lexer.last_token_end();
         let decl_span = self.span(decl_start..decl_end);
+        let ret_type_span = self.span(ret_type_begin..decl_end);
 
         if matches!(self.lexer.current(), Some((Token::Semicolon, _))) {
             self.lexer.lex_one()?;
@@ -205,13 +271,14 @@ impl Parser {
         } else {
             let body = self.parse_block()?;
 
-            Ok(Item::Function {
+            Ok(Item::Function(FnDef {
                 name,
                 args,
                 body,
-                ret_type,
                 decl_span,
-            })
+                ret_type,
+                ret_type_span,
+            }))
         }
     }
 
@@ -302,12 +369,18 @@ impl Parser {
                         ExprInner::Index(array, index, size) => {
                             Assignable::Index(array, index, size)
                         }
+                        ExprInner::MemberAccess(parent, member, typename) => {
+                            Assignable::MemberAccess(parent, member)
+                        }
                         _ => {
                             return Err(self
                                 .err_ctx
                                 .error(expr.span.clone())
                                 .with_message("invalid assignment")
-                                .with_label(expr.span, "only variables are allowed in assignments")
+                                .with_label(
+                                    expr.span,
+                                    "only variables, derefs, indexing and member access allowed",
+                                )
                                 .finish());
                         }
                     };
@@ -334,6 +407,7 @@ impl Parser {
                                 arith_op,
                                 None,
                             ),
+                            typ: None,
                             span,
                         };
                     }
@@ -421,6 +495,7 @@ impl Parser {
 
                 Ok(Expression {
                     inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
+                    typ: None,
                     span,
                 })
             }
@@ -440,6 +515,7 @@ impl Parser {
 
                 Ok(Expression {
                     inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
+                    typ: None,
                     span,
                 })
             }
@@ -453,6 +529,7 @@ impl Parser {
         let expr = match token {
             Token::Number(num, explicit_type) => Expression {
                 inner: ExprInner::Const(num, explicit_type),
+                typ: None,
                 span,
             },
             Token::LeftParenthesis => {
@@ -494,6 +571,7 @@ impl Parser {
                 let rhs = self.parse_single_expr()?;
                 lhs = Expression {
                     inner: self.bind_expr(op, lhs, rhs),
+                    typ: None,
                     span: self.span(0..1),
                 };
 
@@ -510,6 +588,7 @@ impl Parser {
 
             return Ok(Expression {
                 inner: expr_type,
+                typ: None,
                 span,
             });
         }
@@ -559,6 +638,13 @@ impl Parser {
             Operator::Or => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::Or),
 
             Operator::Not => unreachable!(),
+
+            Operator::Dot => {
+                let ExprInner::Variable(member) = rhs.inner else {
+                    panic!("rhs: {:?}", rhs);
+                };
+                ExprInner::MemberAccess(Box::new(lhs), member, None)
+            }
         }
     }
 
@@ -569,6 +655,7 @@ impl Parser {
         let expr = match token {
             (Token::Number(num, explicit_type), range) => Expression {
                 inner: ExprInner::Const(num, explicit_type),
+                typ: None,
                 span: self.span(range),
             },
             (Token::Reference, ref_range) => {
@@ -584,6 +671,7 @@ impl Parser {
                 };
 
                 Expression {
+                    typ: None,
                     inner: ExprInner::Pointer(var),
                     span: self.span(ref_range.start..var_range.end),
                 }
@@ -602,6 +690,7 @@ impl Parser {
 
                 Expression {
                     inner: ExprInner::Deref(var, None),
+                    typ: None,
                     span: self.span(deref_range.start..var_range.end),
                 }
             }
@@ -633,11 +722,13 @@ impl Parser {
                                 -(number as i64) as u64,
                                 Some(SemanticType::I64),
                             ),
+                            typ: None,
                             span,
                         }
                     }
                     _ => Expression {
                         inner: ExprInner::Negate(Box::new(expr)),
+                        typ: None,
                         span: self.span(range),
                     },
                 }
@@ -647,26 +738,41 @@ impl Parser {
 
                 Expression {
                     inner: ExprInner::Not(Box::new(expr)),
+                    typ: None,
                     span: self.span(range),
                 }
             }
             (Token::Ident(ident), range) => self.parse_ident_expr(ident, range)?,
             (Token::Character(c), range) => Expression {
                 inner: ExprInner::Character(c),
+                typ: None,
                 span: self.span(range),
             },
             (Token::String(string), range) => Expression {
                 inner: ExprInner::String(string),
+                typ: None,
                 span: self.span(range),
             },
             (Token::Bool(b), range) => Expression {
                 inner: ExprInner::Bool(b),
+                typ: None,
                 span: self.span(range),
             },
             (Token::LeftParenthesis, _) => {
                 let expr = self.parse_expr()?;
                 self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
                 expr
+            }
+            (Token::Keyword(Keyword::SizeOf), kw_range) => {
+                self.expect_token(Token::LeftParenthesis, "expected opening parenthesis")?;
+                let typ = self.parse_type()?;
+                self.expect_token(Token::RightParenthesis, "expected closing parentehsis")?;
+
+                Expression {
+                    inner: ExprInner::SizeOf(typ),
+                    typ: None,
+                    span: self.span(kw_range.start..self.lexer.last_token_end()),
+                }
             }
             (_, range) => {
                 return Err(self
@@ -686,6 +792,7 @@ impl Parser {
 
             return Ok(Expression {
                 inner: ExprInner::Cast(Box::new(expr), typ),
+                typ: None,
                 span,
             });
         }
@@ -721,6 +828,7 @@ impl Parser {
 
             Ok(Expression {
                 inner: ExprInner::FnCall(ident, args),
+                typ: None,
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         } else if matches!(self.lexer.current(), Some((Token::LeftBracket, _))) {
@@ -732,11 +840,13 @@ impl Parser {
 
             Ok(Expression {
                 inner: ExprInner::Index(ident, Box::new(expr), None),
+                typ: None,
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         } else {
             Ok(Expression {
                 inner: ExprInner::Variable(ident),
+                typ: None,
                 span: self.span((range.start)..(self.lexer.last_token_end())),
             })
         }

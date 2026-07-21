@@ -7,10 +7,10 @@ use strum::EnumIter;
 use ux::u12;
 
 use crate::{
-    ir::{BasicBlock, Label, Op, Operation, Terminator, VirtualReg, lifetime::Lifetime},
+    ir::{BasicBlock, Label, Op, Operation, Terminator, ValSize, VirtualReg, lifetime::Lifetime},
     synthesize::arch::arm::{
         ArmAssembler, InstMarker,
-        instr::{self, BranchOffset, EitherReg, Input, Inst, StoreSize},
+        instr::{self, BranchOffset, EitherOffset, EitherReg, Input, Inst},
     },
 };
 
@@ -175,6 +175,7 @@ const CALLER_SAVED_REGS: &[Register] = &[
 pub fn allocate(
     instructions: Vec<(Inst<VirtualReg>, InstMarker)>,
     stack_size: u16,
+    size_map: &HashMap<VirtualReg, ValSize>,
 ) -> (Vec<(Inst<Register>, InstMarker)>, u16) {
     let mut final_insts = Vec::with_capacity(instructions.len());
 
@@ -188,7 +189,7 @@ pub fn allocate(
 
     let mut last_uses = HashMap::new();
     for (i, (inst, _)) in instructions.iter().enumerate() {
-        let (use1, use2, _) = inst.regs_to_alloc();
+        let (use1, use2, use3, _) = inst.regs_to_alloc();
 
         let mut f = |u| {
             if let Some(u) = u {
@@ -198,6 +199,7 @@ pub fn allocate(
 
         f(use1);
         f(use2);
+        f(use3);
     }
 
     let mut free_regs_on_fn_call_end = Vec::new();
@@ -221,8 +223,8 @@ pub fn allocate(
                         Inst::Store {
                             source: *reg,
                             base: EitherReg::Phys(SP),
-                            offset,
-                            size: StoreSize::Doubleword,
+                            offset: EitherOffset::Imm(offset),
+                            size: *size_map.get(vreg).unwrap(),
                         },
                         InstMarker::None,
                     ));
@@ -238,16 +240,27 @@ pub fn allocate(
                 regs_free.extend(free_regs_on_fn_call_end.drain(..));
                 continue;
             }
-            Inst::Load { base, offset, dest } => {
+            Inst::Load {
+                base,
+                offset,
+                dest,
+                size,
+            } => {
                 if stack.tmp_offset > u12::new(0) {
                     println!("offseting by {}", stack.tmp_offset);
                 }
-                *offset = *offset + stack.tmp_offset;
+
+                if matches!(base, EitherReg::Phys(Register::SP)) {
+                    let EitherOffset::Imm(offset) = offset else {
+                        panic!()
+                    };
+                    *offset = *offset + stack.tmp_offset;
+                }
             }
             _ => {}
         }
 
-        let (use1, use2, dest) = inst.regs_to_alloc();
+        let (use1, use2, use3, dest) = inst.regs_to_alloc();
 
         let dest = dest.map(|vreg| {
             if let Some(reg) = vreg_map.get(&vreg) {
@@ -267,7 +280,16 @@ pub fn allocate(
                 *reg
             } else {
                 let offset = stack.offset_of(&vreg);
-                println!("inserting load of {} at offset {}", vreg, offset);
+                let size = *size_map.get(&vreg).unwrap();
+
+                println!(
+                    "{}",
+                    format!(
+                        "inserting load of {} at offset {} with size {:?}",
+                        vreg, offset, size
+                    )
+                    .green()
+                );
                 let reg = *regs_free.iter().next().unwrap();
                 regs_free.remove(&reg);
                 vreg_map.insert(vreg, reg);
@@ -275,8 +297,9 @@ pub fn allocate(
                 final_insts.push((
                     Inst::Load {
                         base: EitherReg::Phys(SP),
-                        offset,
+                        offset: EitherOffset::Imm(offset),
                         dest: reg,
+                        size,
                     },
                     InstMarker::None,
                 ));
@@ -296,8 +319,9 @@ pub fn allocate(
 
         let use1 = use1.map(&mut alloc_use);
         let use2 = use2.map(&mut alloc_use);
+        let use3 = use3.map(&mut alloc_use);
 
-        let inst = inst.alloc_regs((use1, use2, dest));
+        let inst = inst.alloc_regs((use1, use2, use3, dest));
         final_insts.push((inst, marker));
     }
 

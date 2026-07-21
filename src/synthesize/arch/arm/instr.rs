@@ -4,7 +4,7 @@ use std::collections::HashMap;
 
 use ux::{i5, i6, i7, i12, i19, i21, i26, u9, u12};
 
-use crate::ir::{Condition, Label, Terminator, VirtualReg};
+use crate::ir::{Condition, Label, Terminator, ValSize, VirtualReg};
 
 use super::reg::Register;
 
@@ -215,13 +215,19 @@ impl EitherReg {
     }
 }
 
-#[repr(u32)]
-#[derive(Debug, Clone, Copy, PartialEq)]
-pub enum StoreSize {
-    Byte = 0,
-    Halfword = 1,
-    Word = 2,
-    Doubleword = 3,
+#[derive(Debug, Clone)]
+pub enum EitherOffset {
+    Reg(EitherReg),
+    Imm(u12),
+}
+
+impl EitherOffset {
+    pub fn to_virtual(&self) -> Option<VirtualReg> {
+        match self {
+            Self::Reg(er) => er.to_virtual(),
+            Self::Imm(_) => None,
+        }
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -345,21 +351,9 @@ pub enum Inst<R> {
     /// - Rt: destination register
     Load {
         base: EitherReg,
-        offset: u12,
+        offset: EitherOffset,
         dest: R,
-    },
-
-    /// LDRB instruction.
-    ///
-    /// Loads a byte sized value from memory into a register.
-    ///
-    /// - imm9: offset from base (stored as a multiple of 8)
-    /// - Rn: base pointer
-    /// - Rt: destination register
-    LoadByte {
-        base: R,
-        offset: u9,
-        dest: R,
+        size: ValSize,
     },
 
     /// LDP instruction.
@@ -468,8 +462,8 @@ pub enum Inst<R> {
         source: R,
         base: EitherReg,
         /// Multiple of 8 bytes.
-        offset: u12,
-        size: StoreSize,
+        offset: EitherOffset,
+        size: ValSize,
     },
 
     /// STP instruction.
@@ -536,35 +530,48 @@ pub enum Inst<R> {
 }
 
 impl Inst<VirtualReg> {
-    pub fn regs_to_alloc(&self) -> (Option<VirtualReg>, Option<VirtualReg>, Option<VirtualReg>) {
+    pub fn regs_to_alloc(
+        &self,
+    ) -> (
+        Option<VirtualReg>,
+        Option<VirtualReg>,
+        Option<VirtualReg>,
+        Option<VirtualReg>,
+    ) {
         match self {
-            Inst::Add { a, b, dest } => (Some(*a), Some(*b), Some(*dest)),
-            Inst::AddImm { a, dest, .. } => (a.to_virtual(), None, dest.to_virtual()),
-            Inst::Sub { a, b, dest } => (Some(*a), Some(*b), Some(*dest)),
-            Inst::SubImm { a, dest, .. } => (a.to_virtual(), None, dest.to_virtual()),
-            Inst::Mul { a, b, dest } => (Some(*a), Some(*b), Some(*dest)),
-            Inst::Div { a, b, dest, .. } => (Some(*a), Some(*b), Some(*dest)),
+            Inst::Add { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
+            Inst::AddImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
+            Inst::Sub { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
+            Inst::SubImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
+            Inst::Mul { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
+            Inst::Div { a, b, dest, .. } => (Some(*a), Some(*b), None, Some(*dest)),
 
-            Inst::Neg { val, dest } => (Some(*val), None, Some(*dest)),
+            Inst::Neg { val, dest } => (Some(*val), None, None, Some(*dest)),
 
-            Inst::Cmp { a, b } => (Some(*a), Some(*b), None),
-            Inst::CmpImm { val, imm: _ } => (Some(*val), None, None),
-            Inst::Cset { inv_cond: _, dest } => (None, None, Some(*dest)),
+            Inst::Cmp { a, b } => (Some(*a), Some(*b), None, None),
+            Inst::CmpImm { val, imm: _ } => (Some(*val), None, None, None),
+            Inst::Cset { inv_cond: _, dest } => (None, None, None, Some(*dest)),
 
-            Inst::Adrp { dest, .. } => (None, None, Some(*dest)),
-            Inst::Load { base, dest, .. } => (base.to_virtual(), None, Some(*dest)),
-            Inst::LoadByte { base, dest, .. } => (Some(*base), None, Some(*dest)),
-            Inst::Mov { src, dest } => (src.to_virtual(), None, dest.to_virtual()),
-            Inst::Movk { dest, .. } => (None, None, Some(*dest)),
-            Inst::Movz { dest, .. } => (None, None, Some(*dest)),
-            Inst::Store { source, base, .. } => (Some(*source), base.to_virtual(), None),
+            Inst::Adrp { dest, .. } => (None, None, None, Some(*dest)),
+            Inst::Load {
+                base, dest, offset, ..
+            } => (base.to_virtual(), offset.to_virtual(), None, Some(*dest)),
+            Inst::Mov { src, dest } => (src.to_virtual(), None, None, dest.to_virtual()),
+            Inst::Movk { dest, .. } => (None, None, None, Some(*dest)),
+            Inst::Movz { dest, .. } => (None, None, None, Some(*dest)),
+            Inst::Store {
+                source,
+                base,
+                offset,
+                ..
+            } => (Some(*source), base.to_virtual(), offset.to_virtual(), None),
 
             Inst::StorePair { first, second, .. } | Inst::LoadPair { first, second, .. } => {
-                (Some(*first), Some(*second), None)
+                (Some(*first), Some(*second), None, None)
             }
 
             Inst::BranchNotZero { reg, .. } | Inst::BranchZero { reg, .. } => {
-                (Some(*reg), None, None)
+                (Some(*reg), None, None, None)
             }
 
             Inst::Branch { .. }
@@ -574,52 +581,57 @@ impl Inst<VirtualReg> {
             | Inst::BeginFnCall { .. }
             | Inst::EndFnCall
             | Inst::Svc { .. }
-            | Inst::Syscall => (None, None, None),
+            | Inst::Syscall => (None, None, None, None),
 
-            Inst::Ret { value } => (Some(*value), None, None),
+            Inst::Ret { value } => (Some(*value), None, None, None),
         }
     }
 
     pub fn alloc_regs(
         self,
-        regs: (Option<Register>, Option<Register>, Option<Register>),
+        regs: (
+            Option<Register>,
+            Option<Register>,
+            Option<Register>,
+            Option<Register>,
+        ),
     ) -> Inst<Register> {
         match self {
             Inst::Add { .. } => Inst::Add {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::AddImm { imm, a, dest } => Inst::AddImm {
                 a: regs.0.map(EitherReg::Phys).unwrap_or(a),
                 imm,
-                dest: regs.2.map(EitherReg::Phys).unwrap_or(dest),
+                dest: regs.3.map(EitherReg::Phys).unwrap_or(dest),
             },
             Inst::Sub { .. } => Inst::Sub {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::SubImm { imm, a, dest } => Inst::SubImm {
                 a: regs.0.map(EitherReg::Phys).unwrap_or(a),
                 imm,
-                dest: regs.2.map(EitherReg::Phys).unwrap_or(dest),
+                dest: regs.3.map(EitherReg::Phys).unwrap_or(dest),
             },
             Inst::Mul { .. } => Inst::Mul {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::Div { signed, .. } => Inst::Div {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
                 signed,
             },
 
             Inst::Neg { .. } => Inst::Neg {
                 val: regs.0.unwrap(),
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
 
             Inst::Cmp { .. } => Inst::Cmp {
@@ -632,43 +644,49 @@ impl Inst<VirtualReg> {
             },
             Inst::Cset { inv_cond, .. } => Inst::Cset {
                 inv_cond,
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
 
             Inst::Adrp { page_addr, .. } => Inst::Adrp {
                 page_addr,
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
-            Inst::Load { offset, base, .. } => Inst::Load {
+            Inst::Load {
+                offset, base, size, ..
+            } => Inst::Load {
                 base: regs.0.map(EitherReg::Phys).unwrap_or(base),
-                offset,
-                dest: regs.2.unwrap(),
-            },
-            Inst::LoadByte { offset, .. } => Inst::LoadByte {
-                base: regs.0.unwrap(),
-                offset,
-                dest: regs.2.unwrap(),
+                offset: regs
+                    .1
+                    .map(EitherReg::Phys)
+                    .map(EitherOffset::Reg)
+                    .unwrap_or(offset),
+                dest: regs.3.unwrap(),
+                size,
             },
             Inst::Mov { dest, src } => Inst::Mov {
                 src: regs.0.map(EitherReg::Phys).unwrap_or(src),
-                dest: regs.2.map(EitherReg::Phys).unwrap_or(dest),
+                dest: regs.3.map(EitherReg::Phys).unwrap_or(dest),
             },
             Inst::Movk { shift, value, .. } => Inst::Movk {
                 shift,
                 value,
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::Movz { shift, value, .. } => Inst::Movz {
                 shift,
                 value,
-                dest: regs.2.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::Store {
                 offset, base, size, ..
             } => Inst::Store {
                 source: regs.0.unwrap(),
                 base: regs.1.map(EitherReg::Phys).unwrap_or(base),
-                offset,
+                offset: regs
+                    .2
+                    .map(EitherReg::Phys)
+                    .map(EitherOffset::Reg)
+                    .unwrap_or(offset),
                 size,
             },
             Inst::StorePair { base, offset, .. } => Inst::StorePair {
@@ -872,26 +890,38 @@ impl Inst<Register> {
 
             // Encoding (unsigned offset):
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
-            // 1  1  1  1  1  0  0  1  0  1  imm12                               Rn             Rt
-            Inst::Load { base, offset, dest } => {
-                let offset: u16 = offset.into();
-                let offset = offset as u32;
+            // size  1  1  1  0  0  1  0  1  imm12                               Rn             Rt
+            //
+            // Encoding (register):
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // size  1  1  1  0  0  0  0  1  1  Rm             option   S  1  0  Rn             Rt
+            //                                                 1  1  1  0
+            Inst::Load {
+                base,
+                offset,
+                dest,
+                size,
+            } => {
                 let base = base.expect_phys() as u32;
                 let dest = dest as u32;
+                let size = size as u32;
 
-                (0b1111100101 << 22) | (offset << 10) | (base << 5) | dest
-            }
-
-            // Encoding (unsigned offset):
-            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
-            // 0  0  1  1  1  0  0  0  0  1  0  imm9                       0  1  Rn             Rt
-            Inst::LoadByte { base, offset, dest } => {
-                let offset: u16 = offset.into();
-                let offset = offset as u32;
-                let base = base as u32;
-                let dest = dest as u32;
-
-                (0b00111000010_000000000_01 << 10) | (offset << 12) | (base << 5) | dest
+                match offset {
+                    EitherOffset::Reg(reg) => {
+                        let reg = reg.expect_phys() as u32;
+                        (size << 30)
+                            | (0b111000011 << 21)
+                            | (reg << 16)
+                            | (0b111010 << 10)
+                            | (base << 5)
+                            | dest
+                    }
+                    EitherOffset::Imm(imm) => {
+                        let imm = Into::<u16>::into(imm) as u32;
+                        println!("LOAD {}", imm);
+                        (size << 30) | (0b11100101 << 22) | (imm << 10) | (base << 5) | dest
+                    }
+                }
             }
 
             // Encoding (post-index):
@@ -985,10 +1015,15 @@ impl Inst<Register> {
             } => {
                 let base = base.expect_phys() as u32;
                 let source = source as u32;
-                let imm: u32 = offset.into();
                 let size = size as u32;
 
-                (size << 30) | (0b11100100 << 22) | (imm << 10) | (base << 5) | source
+                match offset {
+                    EitherOffset::Reg(either_reg) => todo!(),
+                    EitherOffset::Imm(imm) => {
+                        let imm = Into::<u16>::into(imm) as u32;
+                        (size << 30) | (0b11100100 << 22) | (imm << 10) | (base << 5) | source
+                    }
+                }
             }
 
             // Encoding (pre-index):

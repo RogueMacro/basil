@@ -6,23 +6,23 @@ use std::{
 use crate::{
     analyze::{
         ErrorContext, ErrorVec, Span,
-        ast::{AST, Assignable, ExprInner, Expression, Item, Statement},
+        ast::{AST, Assignable, ExprInner, Expression, FnDef, Item, Statement},
     },
-    ir::VarSize,
+    ir::ValSize,
 };
 
 pub struct ValidAST(pub AST);
 
 const MAIN_FN: &str = "main";
 
-pub fn analyze(mut ast: AST) -> Result<ValidAST, ErrorVec> {
-    let analyzer = Analyzer::new();
+pub fn analyze(mut ast: AST) -> Result<(ValidAST, Analyzer), ErrorVec> {
+    let mut analyzer = Analyzer::new();
     analyzer.analyze(&mut ast)?;
 
-    Ok(ValidAST(ast))
+    Ok((ValidAST(ast), analyzer))
 }
 
-struct Analyzer {
+pub struct Analyzer {
     err_ctx: ErrorContext,
 
     variables: HashMap<String, SemanticType>,
@@ -30,6 +30,8 @@ struct Analyzer {
     functions: HashMap<String, (Span, SemanticType, Vec<(Span, SemanticType)>)>,
     function_calls: HashMap<String, HashSet<String>>,
     fn_call_context: HashSet<String>,
+    struct_defs: HashMap<String, Vec<(String, SemanticType, Span)>>,
+    types: HashMap<String, DataType>,
 }
 
 impl Analyzer {
@@ -41,19 +43,21 @@ impl Analyzer {
             functions: HashMap::new(),
             function_calls: HashMap::new(),
             fn_call_context: HashSet::new(),
+            struct_defs: HashMap::new(),
+            types: HashMap::new(),
         }
     }
 
-    pub fn analyze(mut self, ast: &mut AST) -> Result<(), ErrorVec> {
+    pub fn analyze(&mut self, ast: &mut AST) -> Result<(), ErrorVec> {
         for item in &ast.items {
             match item {
-                Item::Function {
+                Item::Function(FnDef {
                     name,
                     ret_type,
                     decl_span,
                     args,
                     ..
-                }
+                })
                 | Item::ForwardDecl {
                     name,
                     ret_type,
@@ -77,12 +81,52 @@ impl Analyzer {
                             .report();
                     }
                 }
+                Item::Impl {
+                    struct_name,
+                    functions,
+                } => {
+                    for function in functions {
+                        let FnDef {
+                            name,
+                            ret_type,
+                            decl_span,
+                            args,
+                            ..
+                        } = function;
+
+                        let args = args
+                            .iter()
+                            .map(|(_, typ, span)| (span.clone(), typ.clone()))
+                            .collect();
+
+                        if let Some((other_decl_span, _, _)) = self.functions.insert(
+                            format!("{}::{}", struct_name, name),
+                            (decl_span.clone(), ret_type.to_owned(), args),
+                        ) {
+                            self.err_ctx
+                                .error(decl_span.clone())
+                                .with_message("duplicate function definition")
+                                .with_label(decl_span.clone(), "defined here")
+                                .with_label(other_decl_span.clone(), "first defined here")
+                                .report();
+                        }
+                    }
+                }
                 Item::ExternLib(_) => {}
                 Item::MemorySegment { name, typ } => {
                     self.globals.insert(name.clone(), typ.clone());
                 }
+                Item::Struct {
+                    name,
+                    decl_span,
+                    fields,
+                } => {
+                    self.struct_defs.insert(name.to_owned(), fields.to_owned());
+                }
             }
         }
+
+        self.process_struct_defs();
 
         for item in &mut ast.items {
             self.item(item);
@@ -106,10 +150,10 @@ impl Analyzer {
         }
 
         ast.items.retain(|item| match item {
-            Item::Function { name, .. } => used_functions.contains(name),
-            Item::ForwardDecl { .. } => false,
-            Item::ExternLib(_) => false,
-            Item::MemorySegment { .. } => true,
+            Item::Function(FnDef { name, .. }) => used_functions.contains(name),
+            Item::Impl { .. } => true,
+            Item::Struct { .. } | Item::MemorySegment { .. } => true,
+            Item::ForwardDecl { .. } | Item::ExternLib(_) => false,
         });
 
         // for item in &ast.items {
@@ -134,24 +178,123 @@ impl Analyzer {
         Ok(())
     }
 
+    // fn add_types(&mut self, types: Vec<(String, Vec<(String, SemanticType)>)>) {
+    //     for (typename, fields) in types.iter() {
+    //         let size = self.calc_type_size(&typename, &fields, &types);
+    //         self.types.insert(typename, DataType { fields, size });
+    //     }
+    // }
+
+    // fn calc_type_size(
+    //     &mut self,
+    //     typename: &str,
+    //     fields: &[(String, SemanticType)],
+    //     all_types: &[(String, Vec<(String, SemanticType)>)],
+    // ) -> u64 {
+    //     if let Some(typ) = self.types.get(typename) {
+    //         return typ.size;
+    //     }
+    //
+    //     let mut size = 0;
+    //     for (_, field_type) in fields {
+    //         size += self.size_of(field_type);
+    //     }
+    //
+    //     size
+    // }
+
+    fn process_struct_defs(&mut self) {
+        for name in self.struct_defs.keys().cloned().collect::<Vec<_>>() {
+            self.struct_def_size(&SemanticType::UserType(name));
+        }
+    }
+
+    fn struct_def_size(&mut self, typ: &SemanticType) -> u64 {
+        match typ {
+            SemanticType::Unit => 0,
+            SemanticType::I8 | SemanticType::U8 | SemanticType::Bool | SemanticType::Char => 1,
+            SemanticType::I64 | SemanticType::U64 => 8,
+            SemanticType::Pointer(_) => 8,
+            SemanticType::UserType(name) => {
+                if let Some(datatype) = self.types.get(name) {
+                    return datatype.size;
+                }
+
+                let mut size = 0;
+                let mut fields = self
+                    .struct_defs
+                    .get(name)
+                    .unwrap()
+                    .iter()
+                    .cloned()
+                    .map(|(n, t, s)| (n, t, 0))
+                    .collect::<Vec<_>>();
+
+                for (_, field_type, field_offset) in fields.iter_mut() {
+                    let field_size = self.struct_def_size(field_type);
+
+                    let oversize = size % field_size.min(8);
+                    if oversize > 0 {
+                        size += field_size.min(8) - oversize;
+                    }
+
+                    *field_offset = size;
+                    size += field_size;
+                }
+
+                self.types
+                    .insert(name.to_owned(), DataType { fields, size });
+
+                size
+            }
+        }
+    }
+
+    pub fn size_of(&self, typ: &SemanticType) -> u64 {
+        match typ {
+            SemanticType::Unit => 0,
+            SemanticType::Bool | SemanticType::Char | SemanticType::I8 | SemanticType::U8 => 1,
+            SemanticType::I64 | SemanticType::U64 => 8,
+            SemanticType::Pointer(_) => 8,
+            SemanticType::UserType(name) => {
+                self.types.get(name).map(|t| t.size).unwrap_or_else(|| 0)
+            }
+        }
+    }
+
+    pub fn offset_of_member(&self, typename: &str, member: &str) -> u64 {
+        let typ = self.types.get(typename).unwrap();
+        for (field_name, _, offset) in typ.fields.iter() {
+            if field_name == member {
+                return *offset;
+            }
+        }
+
+        panic!("unknown member")
+    }
+
     fn item(&mut self, item: &mut Item) {
         self.variables.clear();
 
         match item {
-            Item::Function {
+            Item::Function(FnDef {
                 name,
                 args,
                 body,
                 decl_span,
                 ret_type,
-            } => {
+                ret_type_span,
+            }) => {
+                self.verify_type(ret_type, ret_type_span);
+
                 for (arg, typ, _) in args {
+                    self.verify_type(typ, decl_span);
                     self.variables.insert(arg.to_owned(), typ.clone());
                 }
 
                 let has_return = self.body(body, ret_type, decl_span);
 
-                if !has_return && name == MAIN_FN {
+                if !has_return && (name == MAIN_FN || ret_type != &SemanticType::Unit) {
                     self.err_ctx
                         .error(decl_span.clone())
                         .with_message("no return statement found in function main")
@@ -162,9 +305,55 @@ impl Analyzer {
                 let calls = std::mem::take(&mut self.fn_call_context);
                 self.function_calls.insert(name.to_owned(), calls);
             }
+            Item::Impl {
+                struct_name,
+                functions,
+            } => {
+                for fndef in functions {
+                    let FnDef {
+                        name,
+                        args,
+                        body,
+                        decl_span,
+                        ret_type,
+                        ret_type_span,
+                    } = fndef;
+
+                    let name = format!("{}::{}", struct_name, name);
+
+                    self.verify_type(ret_type, ret_type_span);
+
+                    for (arg, typ, _) in args {
+                        self.verify_type(typ, decl_span);
+                        self.variables.insert(arg.to_owned(), typ.clone());
+                    }
+
+                    let has_return = self.body(body, ret_type, decl_span);
+
+                    if !has_return && (name == MAIN_FN || ret_type != &SemanticType::Unit) {
+                        self.err_ctx
+                            .error(decl_span.clone())
+                            .with_message("no return statement found in function")
+                            .with_label(decl_span.clone(), "function must return a value")
+                            .report();
+                    }
+
+                    let calls = std::mem::take(&mut self.fn_call_context);
+                    self.function_calls.insert(name.to_owned(), calls);
+                }
+            }
             Item::ForwardDecl { .. } => {}
             Item::ExternLib(_lib) => (), // TODO: maybe?
             Item::MemorySegment { .. } => {}
+            Item::Struct {
+                name,
+                decl_span,
+                fields,
+            } => {
+                for (_, typ, field_span) in fields {
+                    self.verify_type(typ, field_span);
+                }
+            }
         }
     }
 
@@ -199,6 +388,7 @@ impl Analyzer {
                 var_span,
             } => {
                 let var_type = self.expression(expr, None);
+
                 if self
                     .variables
                     .insert(var.clone(), var_type.unwrap_or(SemanticType::Unit))
@@ -217,12 +407,13 @@ impl Analyzer {
                 var_span,
             } => {
                 let assign_type = self.expression(expr, None);
+
                 let decl_type = match var {
                     Assignable::Var(var) => self.check_var(var, var_span),
                     Assignable::Ptr(ptr, size) => {
                         let typ = self.check_ptr(ptr, var_span);
                         if let Some(typ) = typ.as_ref() {
-                            *size = Some(typ.size());
+                            *size = Some(ValSize::from_bytes(self.size_of(typ)).unwrap());
                         }
 
                         typ
@@ -231,10 +422,50 @@ impl Analyzer {
                         let item_type = self.check_index(array, index, var_span);
 
                         if let Some(item_type) = item_type {
-                            *size = Some(item_type.size());
+                            *size = Some(ValSize::from_bytes(self.size_of(&item_type)).unwrap());
                         }
 
                         None
+                    }
+                    Assignable::MemberAccess(parent, member) => {
+                        match self.expression(parent, None) {
+                            Some(SemanticType::Pointer(
+                                ref user_type @ deref!(SemanticType::UserType(ref name)),
+                            )) => {
+                                self.verify_type(user_type, var_span);
+                                let data_type = self.types.get(name).unwrap();
+                                let field_type = data_type.fields.iter().find_map(|(n, t, _)| {
+                                    if n == member { Some(t.clone()) } else { None }
+                                });
+
+                                if field_type.is_none() {
+                                    self.err_ctx
+                                        .error(var_span.clone())
+                                        .with_message("invalid member access")
+                                        .with_label(
+                                            var_span.clone(),
+                                            format!("type {} has no member {}", name, member),
+                                        )
+                                        .report();
+                                }
+
+                                field_type
+                            }
+                            Some(typ) => {
+                                self.verify_type(&typ, var_span);
+                                self.err_ctx
+                                    .error(var_span.clone())
+                                    .with_message("invalid member access")
+                                    .with_label(
+                                        var_span.clone(),
+                                        format!("type {} has no members", typ),
+                                    )
+                                    .report();
+
+                                None
+                            }
+                            None => None,
+                        }
                     }
                 };
 
@@ -254,7 +485,7 @@ impl Analyzer {
                 }
             }
             Statement::If { guard, body } | Statement::WhileLoop { guard, body } => {
-                if let Some(typ) = self.expression(guard, Some(SemanticType::Bool))
+                if let Some(typ) = self.expression(guard, Some(&SemanticType::Bool))
                     && typ != SemanticType::Bool
                 {
                     self.err_ctx
@@ -273,7 +504,7 @@ impl Analyzer {
                 self.expression(expr, None);
             }
             Statement::Return(expr) => {
-                if let Some(typ) = self.expression(expr, Some(fn_ret_type.clone()))
+                if let Some(typ) = self.expression(expr, Some(fn_ret_type))
                     && &typ != fn_ret_type
                 {
                     self.err_ctx
@@ -297,13 +528,16 @@ impl Analyzer {
     fn expression(
         &mut self,
         expr: &mut Expression,
-        hint: Option<SemanticType>,
+        hint: Option<&SemanticType>,
     ) -> Option<SemanticType> {
-        match &mut expr.inner {
+        let typ = match &mut expr.inner {
             ExprInner::Const(_, explicit_type) => Some(
                 explicit_type
                     .clone()
-                    .or(hint.filter(|hint| hint.compatible_with(&SemanticType::I64)))
+                    .or_else(|| {
+                        hint.filter(|hint| hint.compatible_with(&SemanticType::I64))
+                            .cloned()
+                    })
                     .unwrap_or(SemanticType::I64),
             ),
             ExprInner::Character(_) => Some(SemanticType::Char),
@@ -320,12 +554,13 @@ impl Analyzer {
             }
 
             ExprInner::Arithmetic(expr1, expr2, _op, expr_sign) => {
-                if let Some(type1) = self.expression(expr1, hint.clone())
-                    && let Some(type2) = self.expression(expr2, Some(type1.clone()))
+                if let Some(type1) = self.expression(expr1, hint)
+                    && let Some(type2) = self.expression(expr2, Some(&type1))
                 {
                     if type1 == type2 {
                         if let Some(type_sign) = type1.sign() {
                             *expr_sign = Some(type_sign);
+                            expr.typ = Some(type1.clone());
                             return Some(type1);
                         }
 
@@ -359,6 +594,7 @@ impl Analyzer {
                         let sign2 = type2.sign();
                         if sign1 == sign2 {
                             *expr_sign = sign1;
+                            expr.typ = Some(type1.clone());
                             return Some(SemanticType::Bool);
                         }
 
@@ -397,7 +633,7 @@ impl Analyzer {
 
             ExprInner::Logical(lhs, rhs, _) => {
                 if self
-                    .expression(lhs, Some(SemanticType::Bool))
+                    .expression(lhs, Some(&SemanticType::Bool))
                     .is_some_and(|t| t != SemanticType::Bool)
                 {
                     self.err_ctx
@@ -408,7 +644,7 @@ impl Analyzer {
                 }
 
                 if self
-                    .expression(rhs, Some(SemanticType::Bool))
+                    .expression(rhs, Some(&SemanticType::Bool))
                     .is_some_and(|t| t != SemanticType::Bool)
                 {
                     self.err_ctx
@@ -462,17 +698,18 @@ impl Analyzer {
                 Some(SemanticType::Bool)
             }
 
-            ExprInner::Cast(expr, cast_to) => {
-                if let Some(expr_type) = self.expression(expr, None) {
+            ExprInner::Cast(cast_from, cast_to) => {
+                if let Some(expr_type) = self.expression(cast_from, None) {
                     if expr_type.can_cast_to(cast_to) {
+                        expr.typ = Some(cast_to.clone());
                         return Some(cast_to.clone());
                     }
 
                     self.err_ctx
-                        .error(expr.span.clone())
+                        .error(cast_from.span.clone())
                         .with_message("invalid type cast")
                         .with_label(
-                            expr.span.clone(),
+                            cast_from.span.clone(),
                             format!("cannot cast from {} to {}", expr_type, cast_to),
                         )
                         .report();
@@ -485,10 +722,64 @@ impl Analyzer {
                 let item_type = self.check_index(array, index_expr, &expr.span);
 
                 if let Some(item_type) = item_type.as_ref() {
-                    *size = Some(item_type.size());
+                    *size = Some(ValSize::from_bytes(self.size_of(item_type)).unwrap());
                 }
 
                 item_type
+            }
+
+            ExprInner::MemberAccess(parent, member, typename) => {
+                let parent_type = self.expression(parent, None);
+                match parent_type {
+                    Some(
+                        SemanticType::UserType(name)
+                        | SemanticType::Pointer(deref!(SemanticType::UserType(name))),
+                    ) => {
+                        if let Some(typ) = self.types.get(&name) {
+                            let fieldtype = typ
+                                .fields
+                                .iter()
+                                .find(|(field_name, _, _)| field_name == member);
+
+                            if let Some((_, fieldtype, _)) = fieldtype {
+                                *typename = Some(name);
+                                Some(fieldtype.clone())
+                            } else {
+                                self.err_ctx
+                                    .error(parent.span.clone())
+                                    .with_message("invalid member access")
+                                    .with_label(
+                                        parent.span.clone(),
+                                        format!("{} has no member named {}", name, member),
+                                    )
+                                    .report();
+
+                                None
+                            }
+                        } else {
+                            self.err_ctx
+                                .error(parent.span.clone())
+                                .with_message("invalid member access")
+                                .with_label(parent.span.clone(), format!("unknown type {}", name))
+                                .report();
+
+                            None
+                        }
+                    }
+                    Some(typ) => {
+                        self.err_ctx
+                            .error(parent.span.clone())
+                            .with_message("invalid member access")
+                            .with_label(
+                                parent.span.clone(),
+                                format!("cannot access primitive {}", typ),
+                            )
+                            .report();
+
+                        None
+                    }
+                    None => None,
+                }
             }
 
             ExprInner::FnCall(function, call_args) => {
@@ -548,7 +839,15 @@ impl Analyzer {
                     None
                 }
             }
-        }
+
+            ExprInner::SizeOf(typ) => {
+                self.verify_type(typ, &expr.span);
+                Some(SemanticType::U64)
+            }
+        };
+
+        expr.typ = typ.clone();
+        typ
     }
 
     fn check_index(
@@ -557,7 +856,7 @@ impl Analyzer {
         index_expr: &mut Expression,
         span: &Span,
     ) -> Option<SemanticType> {
-        if let Some(expr_type) = self.expression(index_expr, Some(SemanticType::U64))
+        if let Some(expr_type) = self.expression(index_expr, Some(&SemanticType::U64))
             && expr_type != SemanticType::U64
         {
             self.err_ctx
@@ -619,6 +918,22 @@ impl Analyzer {
 
         None
     }
+
+    fn verify_type(&mut self, typ: &SemanticType, span: &Span) {
+        match typ {
+            SemanticType::UserType(name) if !self.types.contains_key(name) => {
+                self.err_ctx
+                    .error(span.clone())
+                    .with_message("unknown type")
+                    .with_label(span.clone(), format!("unknown type {}", name))
+                    .report();
+            }
+            SemanticType::Pointer(inner) => {
+                self.verify_type(inner, span);
+            }
+            _ => {}
+        }
+    }
 }
 
 fn combine_span(span: &Span, span_2: &Span) -> Span {
@@ -634,7 +949,9 @@ pub enum Sign {
 #[derive(Debug, Clone, PartialEq)]
 pub enum SemanticType {
     Unit,
+    I8,
     I64,
+    U8,
     U64,
     Char,
     Bool,
@@ -646,22 +963,12 @@ impl SemanticType {
     pub fn sign(&self) -> Option<Sign> {
         match self {
             SemanticType::Unit => None,
-            SemanticType::I64 => Some(Sign::Signed),
-            SemanticType::U64 => Some(Sign::Unsigned),
+            SemanticType::I8 | SemanticType::I64 => Some(Sign::Signed),
+            SemanticType::U8 | SemanticType::U64 => Some(Sign::Unsigned),
             SemanticType::Char => Some(Sign::Unsigned),
             SemanticType::Bool => None,
             SemanticType::Pointer(typ) => typ.sign(),
-            SemanticType::UserType(_) => None,
-        }
-    }
-
-    pub fn size(&self) -> VarSize {
-        match self {
-            SemanticType::Unit => VarSize::Zero,
-            SemanticType::I64 | SemanticType::U64 => VarSize::B64,
-            SemanticType::Bool | SemanticType::Char => VarSize::B8,
-            SemanticType::Pointer(_) => VarSize::B64,
-            SemanticType::UserType(_) => todo!(),
+            SemanticType::UserType { .. } => None,
         }
     }
 
@@ -672,8 +979,12 @@ impl SemanticType {
             (self, other),
             (Char, I64)
                 | (I64, Char)
+                | (Char, U8)
+                | (U8, Char)
                 | (Pointer(_), I64)
+                | (Pointer(_), U64)
                 | (I64, Pointer(_))
+                | (U64, Pointer(_))
                 | (Pointer(_), Pointer(_))
                 | (I64, U64)
                 | (U64, I64)
@@ -699,7 +1010,9 @@ impl<S: AsRef<str>> From<S> for SemanticType {
         }
 
         match string {
+            "i8" => Self::I8,
             "i64" => Self::I64,
+            "u8" => Self::U8,
             "u64" => Self::U64,
             "char" => Self::Char,
             "bool" => Self::Bool,
@@ -712,7 +1025,9 @@ impl fmt::Display for SemanticType {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
         match self {
             SemanticType::Unit => write!(f, "()"),
+            SemanticType::I8 => write!(f, "i8"),
             SemanticType::I64 => write!(f, "i64"),
+            SemanticType::U8 => write!(f, "u8"),
             SemanticType::U64 => write!(f, "u64"),
             SemanticType::Char => write!(f, "char"),
             SemanticType::Bool => write!(f, "bool"),
@@ -720,4 +1035,10 @@ impl fmt::Display for SemanticType {
             SemanticType::UserType(typ) => write!(f, "{}", typ),
         }
     }
+}
+
+#[derive(Debug, Clone)]
+struct DataType {
+    fields: Vec<(String, SemanticType, u64)>,
+    size: u64,
 }

@@ -9,6 +9,7 @@ pub fn verify_ssa(ir: &IR) -> Result<(), (String, HashSet<VirtualReg>)> {
             args,
             stack,
             stack_size,
+            size_map,
             body,
         } = item;
 

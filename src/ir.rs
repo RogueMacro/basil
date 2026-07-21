@@ -35,9 +35,9 @@ impl StaticMemory {
         Default::default()
     }
 
-    pub fn alloc(&mut self, name: String, typ: SemanticType) -> u64 {
+    pub fn alloc(&mut self, name: String, typ: SemanticType, type_size: u64) -> u64 {
         let offset = self.size;
-        self.size += typ.size().to_u64();
+        self.size += type_size;
         self.allocs.insert(name, (offset, typ));
         offset
     }
@@ -56,6 +56,7 @@ pub enum Item {
         args: Vec<VirtualReg>,
         stack: HashMap<VirtualReg, u32>,
         stack_size: u32,
+        size_map: HashMap<VirtualReg, ValSize>,
         body: Vec<BasicBlock>,
     },
 }
@@ -106,23 +107,32 @@ impl fmt::Display for Label {
 
 pub type Op = Operation;
 
-#[derive(Debug, Clone, Copy)]
-pub enum VarSize {
-    Zero,
-    B8,
-    B16,
-    B32,
-    B64,
+#[repr(u32)]
+#[derive(Debug, Clone, Copy, PartialEq)]
+pub enum ValSize {
+    Byte = 0,
+    Halfword = 1,
+    Word = 2,
+    Doubleword = 3,
 }
 
-impl VarSize {
-    pub fn to_u64(&self) -> u64 {
+impl ValSize {
+    pub fn from_bytes(size: u64) -> Option<Self> {
+        match size {
+            1 => Some(Self::Byte),
+            2 => Some(Self::Halfword),
+            4 => Some(Self::Word),
+            8 => Some(Self::Doubleword),
+            _ => None,
+        }
+    }
+
+    pub fn to_bytes(&self) -> u64 {
         match self {
-            VarSize::Zero => 0,
-            VarSize::B8 => 8,
-            VarSize::B16 => 16,
-            VarSize::B32 => 32,
-            VarSize::B64 => 64,
+            ValSize::Byte => 1,
+            ValSize::Halfword => 2,
+            ValSize::Word => 4,
+            ValSize::Doubleword => 8,
         }
     }
 }
@@ -166,6 +176,11 @@ pub enum Operation {
         stack_offset: u32,
         dest: VirtualReg,
     },
+    LoadOffset {
+        base: VirtualReg,
+        offset: u32,
+        dest: VirtualReg,
+    },
     LoadArg {
         offset: u32,
         dest: VirtualReg,
@@ -180,13 +195,14 @@ pub enum Operation {
     },
     LoadPointer {
         ptr: VirtualReg,
-        size: VarSize,
+        size: ValSize,
         dest: VirtualReg,
     },
     StorePointer {
         src: VirtualReg,
         ptr: VirtualReg,
-        size: VarSize,
+        size: ValSize,
+        offset: u32,
     },
     Add {
         a: VirtualReg,
@@ -265,6 +281,10 @@ impl Operation {
             Operation::Load { stack_offset, dest } => {
                 assigned = Some(*dest);
             }
+            Operation::LoadOffset { base, offset, dest } => {
+                assigned = Some(*dest);
+                push(Some(*base));
+            }
             Operation::LoadArg { offset, dest } => {
                 assigned = Some(*dest);
             }
@@ -278,7 +298,12 @@ impl Operation {
                 push(Some(*ptr));
                 assigned = Some(*dest);
             }
-            Operation::StorePointer { src, ptr, size: _ } => {
+            Operation::StorePointer {
+                src,
+                ptr,
+                size: _,
+                offset: _,
+            } => {
                 push(Some(*src));
                 push(Some(*ptr));
             }
@@ -451,6 +476,7 @@ impl fmt::Display for IR {
                 args,
                 stack,
                 stack_size: _,
+                size_map,
                 body,
             } = item;
             write!(f, "fn {}(", name)?;
@@ -462,7 +488,7 @@ impl fmt::Display for IR {
                 write!(f, ", {}", reg)?;
             }
 
-            writeln!(f, ") stack: {:?} {{", stack)?;
+            writeln!(f, ") size_map: {:?} {{", size_map)?;
 
             for block in body {
                 let predecessors: Vec<_> = body
@@ -496,10 +522,13 @@ impl fmt::Display for IR {
                     match op {
                         Operation::Assign { src, dest } => writeln!(f, "    {} = {}", dest, src)?,
                         Operation::Store { src, stack_offset } => {
-                            writeln!(f, "    store {} => offset {}", src, stack_offset)?
+                            writeln!(f, "    store {} => stack {}", src, stack_offset)?
                         }
                         Operation::Load { stack_offset, dest } => {
-                            writeln!(f, "    {} = load offset {}", dest, stack_offset)?
+                            writeln!(f, "    {} = load stack {}", dest, stack_offset)?
+                        }
+                        Operation::LoadOffset { base, offset, dest } => {
+                            writeln!(f, "    {} = ptr({}) + {}", dest, base, offset)?
                         }
                         Operation::LoadArg { offset, dest } => {
                             writeln!(f, "    load arg fp + {} => {}", offset, dest)?
@@ -513,9 +542,12 @@ impl fmt::Display for IR {
                         Operation::LoadPointer { ptr, size, dest } => {
                             writeln!(f, "    {} = deref {:?} {}", dest, size, ptr)?
                         }
-                        Operation::StorePointer { src, ptr, size } => {
-                            writeln!(f, "    deref {} = {} ({:?})", ptr, src, size)?
-                        }
+                        Operation::StorePointer {
+                            src,
+                            ptr,
+                            size,
+                            offset,
+                        } => writeln!(f, "    ptr({}) + {} = {} ({:?})", ptr, offset, src, size)?,
 
                         Operation::Add { a, b, dest } => {
                             writeln!(f, "    {} = {} + {}", dest, a, b)?

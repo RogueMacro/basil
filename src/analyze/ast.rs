@@ -5,7 +5,7 @@ use crate::{
         Span,
         semantics::{SemanticType, Sign},
     },
-    ir::VarSize,
+    ir::ValSize,
 };
 
 pub mod parse;
@@ -37,9 +37,12 @@ impl AST {
     pub fn mangle(&mut self, lib: &str) {
         for item in self.items.iter_mut() {
             match item {
-                Item::Function { name, .. } | Item::ForwardDecl { name, .. } => {
-                    *name = format!("{}::{}", lib, name)
-                }
+                Item::Function(FnDef { name, .. })
+                | Item::ForwardDecl { name, .. }
+                | Item::Struct { name, .. }
+                | Item::Impl {
+                    struct_name: name, ..
+                } => *name = format!("{}::{}", lib, name),
                 Item::ExternLib(_) => (),
                 Item::MemorySegment { .. } => (),
             }
@@ -49,13 +52,7 @@ impl AST {
 
 #[derive(Debug)]
 pub enum Item {
-    Function {
-        name: String,
-        args: Vec<(String, SemanticType, Span)>,
-        body: Vec<Statement>,
-        ret_type: SemanticType,
-        decl_span: Span,
-    },
+    Function(FnDef),
     ForwardDecl {
         name: String,
         args: Vec<(String, SemanticType, Span)>,
@@ -67,6 +64,25 @@ pub enum Item {
         name: String,
         typ: SemanticType,
     },
+    Struct {
+        name: String,
+        decl_span: Span,
+        fields: Vec<(String, SemanticType, Span)>,
+    },
+    Impl {
+        struct_name: String,
+        functions: Vec<FnDef>,
+    },
+}
+
+#[derive(Debug)]
+pub struct FnDef {
+    pub name: String,
+    pub args: Vec<(String, SemanticType, Span)>,
+    pub body: Vec<Statement>,
+    pub decl_span: Span,
+    pub ret_type: SemanticType,
+    pub ret_type_span: Span,
 }
 
 #[derive(Debug)]
@@ -96,14 +112,18 @@ pub enum Statement {
 #[derive(Debug, Clone)]
 pub enum Assignable {
     Var(String),
-    Ptr(String, Option<VarSize>),
-    Index(String, Box<Expression>, Option<VarSize>),
+    Ptr(String, Option<ValSize>),
+    Index(String, Box<Expression>, Option<ValSize>),
+    MemberAccess(Box<Expression>, String),
 }
 
 impl Assignable {
     pub fn symbol(&self) -> &str {
         match self {
-            Self::Var(var) | Self::Ptr(var, _) | Self::Index(var, _, _) => var,
+            Self::Var(var)
+            | Self::Ptr(var, _)
+            | Self::Index(var, _, _)
+            | Self::MemberAccess(_, var) => var,
         }
     }
 }
@@ -111,6 +131,7 @@ impl Assignable {
 #[derive(Clone)]
 pub struct Expression {
     pub inner: ExprInner,
+    pub typ: Option<SemanticType>,
     pub span: Span,
 }
 
@@ -132,9 +153,13 @@ pub enum ExprInner {
     Negate(Box<Expression>),
 
     Cast(Box<Expression>, SemanticType),
-    Index(String, Box<Expression>, Option<VarSize>),
+    Index(String, Box<Expression>, Option<ValSize>),
+
+    MemberAccess(Box<Expression>, String, Option<String>),
 
     FnCall(String, Vec<Expression>),
+
+    SizeOf(SemanticType),
 }
 
 #[derive(Debug, Clone, Copy)]

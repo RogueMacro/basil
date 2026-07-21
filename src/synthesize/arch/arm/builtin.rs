@@ -1,10 +1,13 @@
 use ux::{i7, u12};
 
-use crate::synthesize::arch::{
-    Assembler,
-    arm::{
-        instr::{self, EitherReg, ImmShift16, Inst},
-        reg::Reg,
+use crate::{
+    ir::ValSize,
+    synthesize::arch::{
+        Assembler,
+        arm::{
+            instr::{self, EitherOffset, EitherReg, ImmShift16, Inst},
+            reg::Reg,
+        },
     },
 };
 
@@ -34,8 +37,9 @@ pub fn assemble(asm: &mut ArmAssembler) {
 fn load_arg(asm: &mut ArmAssembler, fp_offset: u32, dest: Reg) {
     asm.emit(Inst::Load {
         base: EitherReg::Phys(Reg::SP),
-        offset: u12::new(fp_offset as u16),
+        offset: EitherOffset::Imm(u12::new(fp_offset as u16)),
         dest,
+        size: ValSize::Doubleword,
     });
 }
 
