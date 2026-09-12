@@ -319,13 +319,6 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                             let size_vreg =
                                 self.src_to_vreg(SourceVal::Immediate(val_size.to_bytes()));
 
-                            println!(
-                                "store index {} [{} * sizeof({})]",
-                                array_vreg,
-                                index_vreg,
-                                val_size.to_bytes()
-                            );
-
                             let final_index_vreg = self.get_vreg(val_size);
 
                             self.block_ops.push(Op::Multiply {
@@ -509,7 +502,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let ptr = self.get_vreg(ValSize::Doubleword);
                 let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
 
-                self.load_var(&var, ptr);
+                self.load_var(var, ptr);
 
                 let size = self.analyzer.types.size_of(typ.unwrap());
                 if size > 8 {
@@ -658,13 +651,6 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let val_size = val_size.unwrap();
 
                 let size_vreg = self.src_to_vreg(SourceVal::Immediate(val_size.to_bytes()));
-
-                println!(
-                    "store index {} [{} * sizeof({})]",
-                    array_vreg,
-                    index_vreg,
-                    val_size.to_bytes()
-                );
 
                 let final_index_vreg = self.get_vreg(val_size);
 

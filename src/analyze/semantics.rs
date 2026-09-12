@@ -211,8 +211,6 @@ impl<'s> Analyzer<'s> {
     }
 
     fn item(&mut self, item: &mut Item<'s, TypeId>) {
-        self.variables.clear();
-
         match item {
             Item::Function(FnDef {
                 name,
@@ -237,6 +235,7 @@ impl<'s> Analyzer<'s> {
 
                 let calls = std::mem::take(&mut self.fn_call_context);
                 self.function_calls.insert(name.to_string(), calls);
+                self.variables.clear();
             }
             Item::Impl {
                 struct_name,
@@ -269,6 +268,7 @@ impl<'s> Analyzer<'s> {
 
                     let calls = std::mem::take(&mut self.fn_call_context);
                     self.function_calls.insert(name.to_owned(), calls);
+                    self.variables.clear();
                 }
             }
             Item::ForwardDecl { .. } => {}

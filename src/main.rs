@@ -1,5 +1,6 @@
 use std::{
-    io,
+    io::{self, Stderr, Stdout},
+    os::unix::process::ExitStatusExt,
     path::{Path, PathBuf},
     time::Instant,
 };
@@ -25,6 +26,9 @@ enum Command {
 
         #[arg(long = "asm", help = "Show generated assembly")]
         asm: bool,
+
+        #[arg(long = "ir", help = "Show intermediate representation")]
+        ir: bool,
     },
     Run {
         file: PathBuf,
@@ -44,8 +48,8 @@ fn main() -> Result<(), Error> {
 
 fn cli(args: Cli) -> Result<(), Error> {
     match args.command {
-        Command::Build { file, asm } => {
-            build(&file, asm)?;
+        Command::Build { file, asm, ir } => {
+            build(&file, asm, ir)?;
         }
         Command::Run { file } => {
             build_and_run(&file)?;
@@ -56,7 +60,7 @@ fn cli(args: Cli) -> Result<(), Error> {
 }
 
 fn build_and_run(file: &Path) -> Result<(), Error> {
-    let exe = build(file, false)?;
+    let exe = build(file, false, false)?;
 
     println!(
         "{:>12} `{}`",
@@ -64,11 +68,22 @@ fn build_and_run(file: &Path) -> Result<(), Error> {
         exe.to_string_lossy(),
     );
 
-    let status = std::process::Command::new(exe).status()?;
+    let status = std::process::Command::new(exe)
+        .stdout(std::io::stdout())
+        .stderr(std::io::stderr())
+        .status()?;
+
+    if let Some(signal) = status.signal() {
+        match signal {
+            11 => println!("Program exited with segmentation fault"),
+            other => println!("Program exited with signal {}", other),
+        }
+    }
+
     std::process::exit(status.code().unwrap_or(-1));
 }
 
-fn build(file: &Path, asm: bool) -> Result<PathBuf, Error> {
+fn build(file: &Path, asm: bool, ir: bool) -> Result<PathBuf, Error> {
     let Some(module) = file.file_stem() else {
         return Err(Error::InvalidFile);
     };
@@ -84,7 +99,7 @@ fn build(file: &Path, asm: bool) -> Result<PathBuf, Error> {
     let out_path = basil::files::target_mod(module)?;
 
     let start = Instant::now();
-    if let Err(error_count) = compiler.compile(file, &out_path) {
+    if let Err(error_count) = compiler.compile(file, &out_path, ir) {
         return Err(Error::CompilationFailed(error_count));
     }
     let end = Instant::now();

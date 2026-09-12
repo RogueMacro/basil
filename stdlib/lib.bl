@@ -24,7 +24,7 @@ fn strlen(buf: *char) -> i64 {
   return end - start;
 }
 
-fn itos(number: i64) -> *char {
+fn itos(number: i64) -> *String {
   _n := number;
   n_chars := 0u64;
 
@@ -62,7 +62,7 @@ fn itos(number: i64) -> *char {
   }
 
   str[n_chars + 1] = '\0';
-  return str;
+  return String::from(str);
 }
 
 fn alloc(bytes: u64) -> *i8 {
@@ -86,6 +86,15 @@ struct String {
 }
 
 impl String {
+  fn with_capacity(cap: u64) -> *String {
+    data := std::alloc(cap * sizeof(char)) as *char;
+    return [String] {
+        data: data,
+        length: 0,
+        capacity: cap
+    };
+  }
+
   fn from(str: *char) -> *std::String {
     string := std::alloc(sizeof(std::String)) as *std::String;
 
@@ -102,6 +111,18 @@ impl String {
     string.capacity = len;
     return string;
   }
+
+  fn push(self: *String, c: char) {
+    if self.length == self.capacity {
+      self.capacity = max(self.capacity * 2, 10u64);
+      new_data := std::alloc(self.capacity * sizeof(char)) as *char;
+      copy(self.data as *i8, new_data as *i8, self.length);
+      self.data = new_data;
+    }
+
+    self.data[self.length] = c;
+    self.length += 1;
+  }
 }
 
 fn max(a: u64, b: u64) -> u64 {
@@ -112,18 +133,18 @@ fn max(a: u64, b: u64) -> u64 {
     return b;
 }
 
-struct Vec {
+struct AnyVec {
     data: *i64,
     length: u64,
     capacity: u64
 }
 
-impl Vec {
-    fn new() -> *Vec {
-        return [Vec] { data: 0 as *i64, length: 0, capacity: 0 };
+impl AnyVec {
+    fn new() -> *AnyVec {
+        return [AnyVec] { data: 0 as *i64, length: 0, capacity: 0 };
     }
 
-    fn push_i64(self: *Vec, item: i64) {
+    fn push_i64(self: *AnyVec, item: i64) {
         if self.length == self.capacity {
             old := self.data;
             self.capacity = max(self.capacity * 2, 10u64);
@@ -133,11 +154,11 @@ impl Vec {
             }
         }
 
-        std::fmt::print(String::from("vector push "));
-        std::fmt::print(String::from(itos(item)));
-        std::fmt::print(String::from(" at index "));
-        std::fmt::print(String::from(itos(self.length as i64)));
-        std::fmt::printc('\n');
+        // std::fmt::print(String::from("vector push "));
+        // std::fmt::print(String::from(itos(item)));
+        // std::fmt::print(String::from(" at index "));
+        // std::fmt::print(String::from(itos(self.length as i64)));
+        // std::fmt::printc('\n');
 
         self.data[self.length] = item;
         self.length += 1;

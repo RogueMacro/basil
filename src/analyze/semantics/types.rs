@@ -830,8 +830,6 @@ impl<'s, 'e> Resolver<'e> {
                         //     )
                         //     .report();
 
-                        println!("{:?}", expr);
-
                         FnPtr::Expr(Box::new(expr))
                     }
                 }

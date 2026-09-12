@@ -66,7 +66,7 @@ impl<'e, 's> Lexer<'e, 's> {
         src_path: Rc<PathBuf>,
         err_ctx: &'e mut ErrorContext,
     ) -> Result<Tokens<'s>, ()> {
-        let mut lexer = Self {
+        let mut lexer = Lexer::<'_, 's> {
             chars: CharIter::new(source.chars()),
             source,
             err_ctx,
@@ -74,8 +74,19 @@ impl<'e, 's> Lexer<'e, 's> {
         };
 
         let mut tokens = Vec::new();
-        while let Some(token) = lexer.lex_next().map_err(|_| ())? {
-            tokens.push(token);
+        let mut errors = Vec::new();
+        loop {
+            match lexer.lex_next() {
+                Ok(token) => match token {
+                    Some(token) => tokens.push(token),
+                    None => break,
+                },
+                Err(error) => errors.push(error),
+            }
+        }
+
+        for error in errors {
+            err_ctx.report(error);
         }
 
         let mut tokens = Tokens::<'s> {
@@ -291,30 +302,56 @@ impl<'e, 's> Lexer<'e, 's> {
         let num: u64 = string.parse().unwrap();
         let mut explicit_type = None;
 
-        if let Some(sign_char @ ('i' | 'u')) = self.chars.cur {
+        if matches!(self.chars.cur, Some('i' | 'u')) {
             let begin = self.chars.index;
-            let size_chars = self.chars.next2().ok_or_else(|| {
-                let span = self.span(begin..begin + 1);
-                self.err_ctx.unexpected_eof(span).finish()
-            })?;
-            if !matches!(size_chars, ('6', '4')) {
-                let span = self.span(begin..self.chars.index);
-                return Err(self
-                    .err_ctx
-                    .error(span.clone())
-                    .with_message("invalid number type specifier")
-                    .with_label(span, "expected u64 or i64")
-                    .finish());
-            }
 
-            self.chars.next();
-            let type_specifier = match (sign_char, size_chars) {
-                ('i', ('6', '4')) => Primitive::I64,
-                ('u', ('6', '4')) => Primitive::U64,
-                _ => unreachable!(),
+            while let Some(c) = self.chars.next()
+                && c.is_ascii_digit()
+            {}
+
+            let end = self.chars.index;
+            let size_spec = &self.source[begin..end];
+            let span = self.span(begin..end);
+
+            let primitive = match size_spec {
+                "i64" => Primitive::I64,
+                "i8" => Primitive::I8,
+                "u64" => Primitive::U64,
+                "u8" => Primitive::U8,
+                _ => {
+                    return Err(self
+                        .err_ctx
+                        .error(span.clone())
+                        .with_message("invalid number type specifier")
+                        .with_label(span, "expected u64, u8, i64 or i8")
+                        .finish());
+                }
             };
 
-            explicit_type = Some(type_specifier);
+            explicit_type = Some(primitive);
+
+            // let size_chars = self.chars.next2().ok_or_else(|| {
+            //     let span = self.span(begin..begin + 1);
+            //     self.err_ctx.unexpected_eof(span).finish()
+            // })?;
+            // if !matches!(size_chars, ('6', '4') | ('8', _)) {
+            //     let span = self.span(begin..self.chars.index);
+            //     return Err(self
+            //         .err_ctx
+            //         .error(span.clone())
+            //         .with_message("invalid number type specifier")
+            //         .with_label(span, "expected u64 or i64")
+            //         .finish());
+            // }
+            //
+            // self.chars.next();
+            // let type_specifier = match (sign_char, size_chars) {
+            //     ('i', ('6', '4')) => Primitive::I64,
+            //     ('u', ('6', '4')) => Primitive::U64,
+            //     _ => unreachable!(),
+            // };
+            //
+            // explicit_type = Some(type_specifier);
         }
 
         Ok((Token::Number(num, explicit_type), start..self.chars.index))

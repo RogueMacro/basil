@@ -43,12 +43,13 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
         mut self,
         path: impl Into<PathBuf>,
         out_path: impl AsRef<Path>,
+        print_ir: bool,
     ) -> Result<(), usize> {
         let path: Rc<PathBuf> = Rc::from(path.into());
 
         let mut sources = SourceCache::new();
 
-        let Ok(code) = self.try_compile(path, &sources) else {
+        let Ok(code) = self.try_compile(path, &sources, print_ir) else {
             let errors = self.err_ctx.take_errors();
             errors.dump(&mut sources);
             return Err(errors.len());
@@ -65,6 +66,7 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
         &mut self,
         filepath: Rc<PathBuf>,
         sources: &SourceCache,
+        print_ir: bool,
     ) -> Result<LinkableCode<A>, ()> {
         let mut ast_vec = Vec::new();
         self.import_package(
@@ -102,7 +104,11 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
         match semantics::analyze(ast, typemap, &main_fn) {
             Ok((ast, analyzer)) => {
                 let ir = IR::generate(ast, &analyzer);
-                println!("{}", ir);
+
+                if print_ir {
+                    println!("{}", ir);
+                }
+
                 let code = A::assemble(ir, &main_fn);
                 Ok(code)
             }

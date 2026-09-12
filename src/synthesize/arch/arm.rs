@@ -281,11 +281,18 @@ impl ProcedureGen {
                         });
                     }
                     Op::LoadArg { offset, dest } => {
+                        let size = *size_map.get(&dest).unwrap();
+                        println!("load {} = {} * {}", dest, offset, size.to_bytes());
                         proc.emit(Inst::Load {
                             base: EitherReg::Phys(Register::FP),
-                            offset: EitherOffset::Imm(u12::new(2 + offset as u16)),
+                            offset: EitherOffset::Imm(u12::new(
+                                // 16 + offset as u16 / size.to_bytes() as u16,
+                                (16 / size.to_bytes() as u32
+                                    + offset * (9 - size.to_bytes() as u32))
+                                    as u16,
+                            )),
                             dest,
-                            size: *size_map.get(&dest).unwrap(),
+                            size,
                         });
                     }
                     Op::AddressOf { val, dest } => {

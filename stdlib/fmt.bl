@@ -10,7 +10,8 @@ fn println(string: *std::String) {
 }
 
 fn printc(c: char) {
-    std::syscall::write(1, &c, 1);
+    i := c;
+    std::syscall::write(1, &i, 1);
 }
 
 // struct Formatter {
@@ -25,4 +26,3 @@ fn printc(c: char) {
 //     }
 // }
 
-fn format() {}
