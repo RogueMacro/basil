@@ -101,14 +101,23 @@ pub enum Statement<'s, T> {
         expr: Expression<'s, T>,
         var_span: Span,
     },
-    If {
-        guard: Expression<'s, T>,
-        body: Vec<Statement<'s, T>>,
-    },
+    If(IfElse<'s, T>),
     Return(Expression<'s, T>),
     Expr(Expression<'s, T>),
     WhileLoop {
         guard: Expression<'s, T>,
+        body: Vec<Statement<'s, T>>,
+    },
+}
+
+#[derive(Debug)]
+pub enum IfElse<'s, T> {
+    If {
+        guard: Expression<'s, T>,
+        body: Vec<Statement<'s, T>>,
+        next: Option<Box<IfElse<'s, T>>>,
+    },
+    Else {
         body: Vec<Statement<'s, T>>,
     },
 }

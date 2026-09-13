@@ -6,7 +6,7 @@ use std::{
 use crate::{
     analyze::{
         ErrorContext, ErrorVec, Span,
-        ast::{AST, Assignable, ExprInner, Expression, FnDef, FnPtr, Item, Statement},
+        ast::{AST, Assignable, ExprInner, Expression, FnDef, FnPtr, IfElse, Item, Statement},
         semantics::types::{ParsedType, Sign, TypeId, TypeKind, TypeMap},
     },
     ir::ValSize,
@@ -450,7 +450,10 @@ impl<'s> Analyzer<'s> {
                         .report();
                 }
             }
-            Statement::If { guard, body } | Statement::WhileLoop { guard, body } => {
+            Statement::If(ifelse) => {
+                return self.if_else(ifelse, fn_ret_type, fn_decl_span);
+            }
+            Statement::WhileLoop { guard, body } => {
                 if let Some(typeid) = self.expression(guard, Some(TypeId::bool()))
                     && typeid != TypeId::bool()
                 {
@@ -488,6 +491,39 @@ impl<'s> Analyzer<'s> {
         }
 
         false
+    }
+
+    fn if_else(
+        &mut self,
+        ifelse: &mut IfElse<'s, TypeId>,
+        fn_ret_type: TypeId,
+        fn_decl_span: &Span,
+    ) -> bool {
+        match ifelse {
+            IfElse::If { guard, body, next } => {
+                if let Some(typeid) = self.expression(guard, Some(TypeId::bool()))
+                    && typeid != TypeId::bool()
+                {
+                    let message =
+                        format!("expected type 'bool', got '{}'", self.types.display(typeid));
+                    self.err_ctx
+                        .error(guard.span.clone())
+                        .with_message("unexpected type")
+                        .with_label(guard.span.clone(), message)
+                        .report();
+                }
+
+                let next_has_ret = next
+                    .as_mut()
+                    .map(|next| self.if_else(next, fn_ret_type, fn_decl_span))
+                    .unwrap_or(false);
+
+                self.body(body, fn_ret_type, fn_decl_span) || next_has_ret
+            }
+            IfElse::Else { body } => {
+                return self.body(body, fn_ret_type, fn_decl_span);
+            }
+        }
     }
 
     fn expression(

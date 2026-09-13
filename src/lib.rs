@@ -1,4 +1,5 @@
 #![feature(deref_patterns)]
+#![feature(smart_pointer_try_map)]
 
 use std::{
     cell::{Cell, OnceCell, RefCell, RefMut, UnsafeCell},

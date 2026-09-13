@@ -10,7 +10,7 @@ use rustc_hash::FxHasher;
 
 use crate::analyze::{
     ErrorContext, Span,
-    ast::{AST, Assignable, ExprInner, Expression, FnDef, FnPtr, Item, Statement},
+    ast::{AST, Assignable, ExprInner, Expression, FnDef, FnPtr, IfElse, Item, Statement},
 };
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
@@ -630,16 +630,33 @@ impl<'s, 'e> Resolver<'e> {
                 expr: self.expression(mangled_path, imports, expr),
                 var_span,
             },
-            Statement::If { guard, body } => Statement::If {
-                guard: self.expression(mangled_path, imports, guard),
-                body: self.body(mangled_path, imports, body),
-            },
+            Statement::If(ifelse) => Statement::If(self.if_else(mangled_path, imports, ifelse)),
             Statement::Return(expr) => {
                 Statement::Return(self.expression(mangled_path, imports, expr))
             }
             Statement::Expr(expr) => Statement::Expr(self.expression(mangled_path, imports, expr)),
             Statement::WhileLoop { guard, body } => Statement::WhileLoop {
                 guard: self.expression(mangled_path, imports, guard),
+                body: self.body(mangled_path, imports, body),
+            },
+        }
+    }
+
+    fn if_else(
+        &mut self,
+        mangled_path: &str,
+        imports: &[(&str, Span)],
+        ifelse: IfElse<'s, (ParsedType<'s>, Span)>,
+    ) -> IfElse<'s, TypeId> {
+        match ifelse {
+            IfElse::If { guard, body, next } => IfElse::If {
+                guard: self.expression(mangled_path, imports, guard),
+                body: self.body(mangled_path, imports, body),
+                next: next.map(|ifelse| {
+                    Box::map(ifelse, |ifelse| self.if_else(mangled_path, imports, ifelse))
+                }),
+            },
+            IfElse::Else { body } => IfElse::Else {
                 body: self.body(mangled_path, imports, body),
             },
         }

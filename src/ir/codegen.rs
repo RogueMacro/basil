@@ -1,4 +1,5 @@
 use std::{
+    assert_matches,
     borrow::Cow,
     collections::{HashMap, HashSet},
 };
@@ -6,7 +7,7 @@ use std::{
 use crate::{
     analyze::{
         ast::{
-            ArithmeticOp, Assignable, ExprInner, Expression, FnDef, FnPtr, Item as AstItem,
+            ArithmeticOp, Assignable, ExprInner, Expression, FnDef, FnPtr, IfElse, Item as AstItem,
             LogicalOp, Statement,
         },
         semantics::{
@@ -350,7 +351,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                             let offset = self
                                 .analyzer
                                 .types
-                                .offset_of_member(value_typeid, &member)
+                                .offset_of_member(value_typeid, member)
                                 .unwrap();
 
                             let parent = self.flatten_expr(*parent, None);
@@ -372,24 +373,13 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                     self.flatten_expr(expr, None);
                 }
 
-                Statement::If { guard, body } => {
-                    let cond = self.flatten_expr(guard, None);
-                    let cond = self.src_to_vreg(cond);
+                Statement::If(ifelse) => {
+                    assert_matches!(ifelse, IfElse::If { .. });
 
-                    let if_true = self.next_label();
-                    let if_false = self.next_label();
+                    let end_if = self.next_label();
+                    self.if_else(ifelse, end_if);
 
-                    self.commit_block(
-                        Terminator::BranchCond {
-                            cond,
-                            if_true,
-                            if_false,
-                        },
-                        if_true,
-                    );
-
-                    self.consume(body);
-                    self.commit_block(Terminator::Branch { label: if_false }, if_false);
+                    // self.commit_block(Terminator::Branch { label: end_if }, end_if);
                 }
                 Statement::Return(expr) => {
                     let value = self.flatten_expr(expr, None);
@@ -418,6 +408,43 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                     self.consume(body);
                     self.commit_block(Terminator::Branch { label: guard_label }, end_label);
                 }
+            }
+        }
+    }
+
+    fn if_else(&mut self, ifelse: IfElse<'s, TypeId>, end_if: Label) {
+        match ifelse {
+            IfElse::If { guard, body, next } => {
+                let cond = self.flatten_expr(guard, None);
+                let cond = self.src_to_vreg(cond);
+
+                let if_true = self.next_label();
+                let if_false = if next.is_some() {
+                    self.next_label()
+                } else {
+                    end_if
+                };
+
+                self.commit_block(
+                    Terminator::BranchCond {
+                        cond,
+                        if_true,
+                        if_false,
+                    },
+                    if_true,
+                );
+
+                self.consume(body);
+
+                self.commit_block(Terminator::Branch { label: end_if }, if_false);
+
+                if let Some(next) = next {
+                    self.if_else(*next, end_if);
+                }
+            }
+            IfElse::Else { body } => {
+                self.consume(body);
+                self.commit_block(Terminator::Branch { label: end_if }, end_if);
             }
         }
     }

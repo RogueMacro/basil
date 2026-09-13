@@ -469,8 +469,20 @@ impl ProcedureGen {
             proc.instructions[first_op_index].1 = InstMarker::FirstInBB(bb.label);
         }
 
+        for i in proc.instructions.iter() {
+            if matches!(i.1, InstMarker::FirstInBB(Label::Anon(10))) {
+                println!("BEFORE ALLOC");
+            }
+        }
+
         let (instructions, extra_stack_size) =
             reg::allocate(proc.instructions, stack_size as u16, size_map);
+
+        for i in instructions.iter() {
+            if matches!(i.1, InstMarker::FirstInBB(Label::Anon(10))) {
+                println!("AFTER ALLOC");
+            }
+        }
 
         let mut label_map = HashMap::from_iter([(Label::End, instructions.len() as i32)]);
         for (i, (_, marker)) in instructions.iter().enumerate() {

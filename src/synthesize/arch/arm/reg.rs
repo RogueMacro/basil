@@ -202,7 +202,13 @@ pub fn allocate(
 
     let mut free_regs_on_fn_call_end = Vec::new();
 
+    let mut markers = Vec::new();
+
     for (i, (mut inst, marker)) in instructions.into_iter().enumerate() {
+        if !matches!(marker, InstMarker::None) {
+            markers.push((final_insts.len(), marker));
+        }
+
         match &mut inst {
             Inst::BeginFnCall {
                 reserved_stack_size,
@@ -303,7 +309,12 @@ pub fn allocate(
         let use3 = use3.map(&mut alloc_use);
 
         let inst = inst.alloc_regs((use1, use2, use3, dest));
-        final_insts.push((inst, marker));
+        final_insts.push((inst, InstMarker::None));
+    }
+
+    for (index, marker) in markers {
+        println!("insert {:?} at {}", marker, index);
+        final_insts[index].1 = marker;
     }
 
     (final_insts, stack.size * 8)

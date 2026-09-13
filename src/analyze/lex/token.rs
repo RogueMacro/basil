@@ -153,6 +153,7 @@ pub enum Keyword {
     Impl,
 
     If,
+    Else,
     While,
     For,
     In,
@@ -168,6 +169,7 @@ impl Keyword {
             "fn" => Keyword::Function,
             "return" => Keyword::Return,
             "if" => Keyword::If,
+            "else" => Keyword::Else,
             "use" => Keyword::Use,
             "extern" => Keyword::Extern,
             "as" => Keyword::As,

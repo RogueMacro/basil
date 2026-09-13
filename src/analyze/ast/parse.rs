@@ -3,8 +3,8 @@ use std::{borrow::Cow, ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, Span,
     ast::{
-        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, FnDef, FnPtr, Item,
-        LogicalOp, ParsedType, Statement,
+        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, FnDef, FnPtr, IfElse,
+        Item, LogicalOp, ParsedType, Statement,
     },
     lex::{
         Tokens,
@@ -550,7 +550,7 @@ impl<'e, 's> Parser<'e, 's> {
     ) -> Result<Statement<'s, (ParsedType<'s>, Span)>, Error> {
         match keyword {
             Keyword::Return => self.parse_return(),
-            Keyword::If => self.parse_if(),
+            Keyword::If => self.parse_if().map(Statement::If),
             Keyword::While => self.parse_while_loop(),
             _ => Err(self
                 .err_ctx
@@ -566,7 +566,7 @@ impl<'e, 's> Parser<'e, 's> {
         Ok(Statement::Return(expr))
     }
 
-    fn parse_if(&mut self) -> Result<Statement<'s, (ParsedType<'s>, Span)>, Error> {
+    fn parse_if(&mut self) -> Result<IfElse<'s, (ParsedType<'s>, Span)>, Error> {
         let guard = self.parse_expr();
         if guard.is_err() {
             while !matches!(self.tokens.current(), Some((Token::LeftCurlyBracket, _))) {
@@ -576,9 +576,28 @@ impl<'e, 's> Parser<'e, 's> {
 
         let body = self.parse_block()?;
 
-        Ok(Statement::If {
+        let mut next = None;
+        if matches!(
+            self.tokens.current(),
+            Some((Token::Keyword(Keyword::Else), _))
+        ) {
+            self.tokens.move_one();
+            if matches!(
+                self.tokens.current(),
+                Some((Token::Keyword(Keyword::If), _))
+            ) {
+                self.tokens.move_one();
+                next = Some(self.parse_if()?);
+            } else {
+                let else_body = self.parse_block()?;
+                next = Some(IfElse::Else { body: else_body });
+            }
+        }
+
+        Ok(IfElse::If {
             guard: guard?,
             body,
+            next: next.map(Box::new),
         })
     }
 
