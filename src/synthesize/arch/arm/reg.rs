@@ -189,9 +189,10 @@ struct Stack<'s> {
 }
 
 impl<'s> Stack<'s> {
+    /// `initial_size` is in bytes, but the stack itself is tracked in 8-byte slots.
     pub fn new(initial_size: u16, size_map: &'s HashMap<VirtualReg, ValSize>) -> Self {
         Self {
-            size: initial_size,
+            size: initial_size.div_ceil(8),
             size_map,
             map: HashMap::new(),
             free_slots: Vec::new(),
@@ -210,6 +211,15 @@ impl<'s> Stack<'s> {
         index + self.tmp_offset
     }
 
+    /// Returns the slot of `vreg`, allocating one if it is not on the stack yet.
+    pub fn alloc_or_get(&mut self, vreg: VirtualReg) -> u12 {
+        if let Some(&index) = self.map.get(&vreg) {
+            return index + self.tmp_offset;
+        }
+
+        self.alloc(vreg)
+    }
+
     pub fn offset_of(&mut self, vreg: &VirtualReg) -> u12 {
         *self
             .map
@@ -222,6 +232,11 @@ impl<'s> Stack<'s> {
         let offset = self.map.remove(&vreg).unwrap();
         self.free_slots.retain(|o| *o != offset);
     }
+}
+
+/// Converts an 8-byte stack slot into a load/store immediate, which is scaled by `size`.
+fn slot_imm(slot: u12, size: ValSize) -> u12 {
+    u12::new(u16::from(slot) * 8 / size.to_bytes() as u16)
 }
 
 use Register::*;
@@ -279,9 +294,9 @@ pub fn allocate(
 
                     let size = *size_map.get(vreg).unwrap();
 
-                    let offset: u16 = stack.alloc(*vreg).into();
-                    println!("  {} / {:?} => {}", vreg, reg, offset);
-                    let offset = u12::new(offset / size.to_bytes() as u16);
+                    let slot = stack.alloc_or_get(*vreg);
+                    println!("  {} / {:?} => {}", vreg, reg, slot);
+                    let offset = slot_imm(slot, size);
 
                     final_insts.push((
                         Inst::Store {
@@ -314,7 +329,7 @@ pub fn allocate(
                     let EitherOffset::Imm(offset) = offset else {
                         panic!()
                     };
-                    *offset = *offset + stack.tmp_offset;
+                    *offset = *offset + slot_imm(stack.tmp_offset, *size);
                 }
             }
             _ => {}
@@ -338,8 +353,8 @@ pub fn allocate(
             let reg = if let Some(reg) = vreg_map.get(&vreg) {
                 *reg
             } else {
-                let offset = stack.offset_of(&vreg);
                 let size = *size_map.get(&vreg).unwrap();
+                let offset = slot_imm(stack.offset_of(&vreg), size);
 
                 let reg = *regs_free.iter().next().unwrap();
                 regs_free.remove(&reg);
@@ -380,5 +395,6 @@ pub fn allocate(
         final_insts[index].1 = marker;
     }
 
-    (final_insts, stack.size)
+    // extra bytes needed for spilled registers, on top of the initial stack size
+    (final_insts, stack.size * 8 - stack_size)
 }
