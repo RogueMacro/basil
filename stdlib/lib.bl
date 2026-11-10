@@ -24,7 +24,7 @@ fn strlen(buf: *char) -> i64 {
   return end - start;
 }
 
-fn itos(number: i64) -> *String {
+fn itos(number: i64) -> *char {
   _n := number;
   n_chars := 0u64;
 
@@ -62,7 +62,8 @@ fn itos(number: i64) -> *String {
   }
 
   str[n_chars + 1] = '\0';
-  return String::from(str);
+  // return String::from(str);
+  return str;
 }
 
 fn alloc(bytes: u64) -> *i8 {
@@ -112,16 +113,27 @@ impl String {
     return string;
   }
 
-  fn push(self: *String, c: char) {
-    if self.length == self.capacity {
-      self.capacity = max(self.capacity * 2, 10u64);
+  fn reserve(self: *String, additional: u64) {
+    total := self.length + additional;
+    if total > self.capacity {
+      self.capacity = max(self.capacity * 2, total);
       new_data := std::alloc(self.capacity * sizeof(char)) as *char;
       copy(self.data as *i8, new_data as *i8, self.length);
       self.data = new_data;
     }
+  }
 
+  fn push(self: *String, c: char) {
+    self.reserve(1u64);
     self.data[self.length] = c;
     self.length += 1;
+  }
+
+  fn extend(self: *String, string: *String) {
+    self.reserve(string.length);
+    self_end := (self.data as u64 + self.length) as *char;
+    copy(string.data as *i8, self_end as *i8, string.length);
+    self.length += string.length;
   }
 }
 
@@ -169,5 +181,6 @@ fn copy(src: *i8, dest: *i8, len: u64) {
     i := 0u64;
     while i < len {
         dest[i] = src[i];
+        i += 1;
     }
 }

@@ -431,7 +431,16 @@ impl<'e, 's> Parser<'e, 's> {
                 Some((Token::Assign(op), assign_range)) => {
                     let var = match expr.inner.clone() {
                         ExprInner::Ident(var) => Assignable::Var(var),
-                        ExprInner::Deref(var, None) => Assignable::Ptr(var, None),
+                        ExprInner::Deref(var, None) => {
+                            let Expression {
+                                inner: ExprInner::Ident(var),
+                                ..
+                            } = *var
+                            else {
+                                todo!()
+                            };
+                            Assignable::Ptr(var, None)
+                        }
                         ExprInner::Index {
                             data,
                             index,
@@ -829,21 +838,23 @@ impl<'e, 's> Parser<'e, 's> {
                 }
             }
             (Token::Operator(Operator::Star), deref_range) => {
-                let (token, var_range) = self.expect_take_current()?;
-                let Token::Ident(var) = token else {
-                    let var_span = self.span(var_range);
-                    return Err(self
-                        .err_ctx
-                        .error(self.span(deref_range))
-                        .with_message("invalid pointer deref")
-                        .with_label(var_span, "expected variable")
-                        .finish());
-                };
+                // let (token, var_range) = self.expect_take_current()?;
+                // let Token::Ident(var) = token else {
+                //     let var_span = self.span(var_range);
+                //     return Err(self
+                //         .err_ctx
+                //         .error(self.span(deref_range))
+                //         .with_message("invalid pointer deref")
+                //         .with_label(var_span, "expected variable")
+                //         .finish());
+                // };
+
+                let expr = self.parse_single_expr()?;
 
                 Expression {
-                    inner: ExprInner::Deref(var, None),
+                    inner: ExprInner::Deref(Box::new(expr), None),
                     typ: None,
-                    span: self.span(deref_range.start..var_range.end),
+                    span: self.span(deref_range.start..self.tokens.last_token_end()),
                 }
             }
             (Token::Operator(Operator::Minus), range) => {

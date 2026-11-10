@@ -704,7 +704,9 @@ impl<'s, 'e> Resolver<'e> {
             ExprInner::Bool(boo) => ExprInner::Bool(boo),
             ExprInner::Ident(var) => ExprInner::Ident(var),
             ExprInner::Pointer(var) => ExprInner::Pointer(var),
-            ExprInner::Deref(var, _) => ExprInner::Deref(var, None),
+            ExprInner::Deref(var, _) => {
+                ExprInner::Deref(Box::new(self.expression(mangled_path, imports, *var)), None)
+            }
             ExprInner::Arithmetic(lhs, rhs, arithmetic_op, sign) => ExprInner::Arithmetic(
                 Box::new(self.expression(mangled_path, imports, *lhs)),
                 Box::new(self.expression(mangled_path, imports, *rhs)),

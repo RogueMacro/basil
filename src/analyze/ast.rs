@@ -161,7 +161,7 @@ pub enum ExprInner<'s, T> {
 
     Ident(&'s str),
     Pointer(&'s str),
-    Deref(&'s str, Option<TypeId>),
+    Deref(Box<Expression<'s, T>>, Option<TypeId>),
 
     Arithmetic(
         Box<Expression<'s, T>>,

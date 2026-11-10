@@ -1,4 +1,7 @@
-use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
+use std::{
+    collections::{BTreeMap, BTreeSet, HashMap, HashSet},
+    fmt,
+};
 
 use colored::Colorize;
 use num_derive::{FromPrimitive, ToPrimitive};
@@ -54,6 +57,51 @@ pub enum Register {
     FP = 29,  // frame pointer (X29)
     LR = 30,  // link register (X30)
     SP = 31,  // stack pointer (X31) (not general purpose)
+}
+
+impl Register {
+    pub fn as_str_32bit(&self) -> &'static str {
+        match self {
+            X0 => "w0",
+            X1 => "w1",
+            X2 => "w2",
+            X3 => "w3",
+            X4 => "w4",
+            X5 => "w5",
+            X6 => "w6",
+            X7 => "w7",
+            X8 => "w8",
+            X9 => "w9",
+            X10 => "w10",
+            X11 => "w11",
+            X12 => "w12",
+            X13 => "w13",
+            X14 => "w14",
+            X15 => "w15",
+            X16 => "w16",
+            X17 => "w17",
+            X18 => "w18",
+            X19 => "w19",
+            X20 => "w20",
+            X21 => "w21",
+            X22 => "w22",
+            X23 => "w23",
+            X24 => "w24",
+            X25 => "w25",
+            X26 => "w26",
+            X27 => "w27",
+            X28 => "w28",
+            FP => "fp",
+            LR => "lr",
+            SP => "sp",
+        }
+    }
+}
+
+impl fmt::Display for Register {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        f.write_str(&format!("{:?}", self).to_lowercase())
+    }
 }
 
 /// Used in register allocation when mapping a virtual register to a physical register. This
@@ -131,15 +179,26 @@ pub enum Location {
     Stack(u12),
 }
 
-#[derive(Default, Debug)]
-struct Stack {
+#[derive(Debug)]
+struct Stack<'s> {
     size: u16,
+    size_map: &'s HashMap<VirtualReg, ValSize>,
     map: HashMap<VirtualReg, u12>,
     free_slots: Vec<u12>,
     tmp_offset: u12,
 }
 
-impl Stack {
+impl<'s> Stack<'s> {
+    pub fn new(initial_size: u16, size_map: &'s HashMap<VirtualReg, ValSize>) -> Self {
+        Self {
+            size: initial_size,
+            size_map,
+            map: HashMap::new(),
+            free_slots: Vec::new(),
+            tmp_offset: u12::new(0),
+        }
+    }
+
     pub fn alloc(&mut self, vreg: VirtualReg) -> u12 {
         let index = self.free_slots.pop().unwrap_or_else(|| {
             self.size += 1;
@@ -177,8 +236,8 @@ pub fn allocate(
 ) -> (Vec<(Inst<Register>, InstMarker)>, u16) {
     let mut final_insts = Vec::with_capacity(instructions.len());
 
-    let mut stack = Stack::default();
-    stack.size = stack_size;
+    println!("initial size: {}", stack_size);
+    let mut stack = Stack::new(stack_size, size_map);
 
     let mut regs_free: BTreeSet<Register> = BTreeSet::from_iter(CALLER_SAVED_REGS.iter().copied());
     let mut regs_in_use: BTreeSet<Register> = BTreeSet::new();
@@ -213,18 +272,23 @@ pub fn allocate(
             Inst::BeginFnCall {
                 reserved_stack_size,
             } => {
+                println!("\nBeginFnCall");
                 for (vreg, reg) in vreg_map.iter() {
                     regs_in_use.remove(reg);
                     free_regs_on_fn_call_end.push(*reg);
+
+                    let size = *size_map.get(vreg).unwrap();
+
                     let offset: u16 = stack.alloc(*vreg).into();
-                    let offset = u12::new(offset);
+                    println!("  {} / {:?} => {}", vreg, reg, offset);
+                    let offset = u12::new(offset / size.to_bytes() as u16);
 
                     final_insts.push((
                         Inst::Store {
                             source: *reg,
                             base: EitherReg::Phys(SP),
                             offset: EitherOffset::Imm(offset),
-                            size: *size_map.get(vreg).unwrap(),
+                            size,
                         },
                         InstMarker::None,
                     ));
@@ -313,9 +377,8 @@ pub fn allocate(
     }
 
     for (index, marker) in markers {
-        println!("insert {:?} at {}", marker, index);
         final_insts[index].1 = marker;
     }
 
-    (final_insts, stack.size * 8)
+    (final_insts, stack.size)
 }

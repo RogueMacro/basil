@@ -31,6 +31,7 @@ pub mod analyze;
 pub mod files;
 pub mod ir;
 pub mod synthesize;
+pub mod vm;
 
 #[derive(Default)]
 pub struct Compiler<E: Executable, A: Assembler> {
@@ -61,6 +62,20 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
             .build(code, out_path);
 
         Ok(())
+    }
+
+    pub fn compile_for_vm(mut self, path: impl Into<PathBuf>) -> Result<LinkableCode<A>, usize> {
+        let path: Rc<PathBuf> = Rc::from(path.into());
+
+        let mut sources = SourceCache::new();
+
+        let Ok(code) = self.try_compile(path, &sources, false) else {
+            let errors = self.err_ctx.take_errors();
+            errors.dump(&mut sources);
+            return Err(errors.len());
+        };
+
+        Ok(code)
     }
 
     fn try_compile(
@@ -141,6 +156,10 @@ impl<E: Executable, A: Assembler> Compiler<E, A> {
 
         let tokens = Lexer::lex(source, filepath.clone(), &mut self.err_ctx)?;
         let mut ast = Parser::parse(tokens, source, filepath.clone(), &mut self.err_ctx)?;
+
+        if filepath.to_str().unwrap().contains("test.bl") {
+            println!("{:?}: {:#?}", filepath, ast);
+        }
 
         let Some(package) = ast.package else {
             self.err_ctx

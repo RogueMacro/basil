@@ -1,5 +1,9 @@
 use std::String;
 
+fn cprint(str: *char) {
+  std::syscall::write(1, str, std::strlen(str));
+}
+
 fn print(string: *std::String) {
     std::syscall::write(1, string.data, (string.length) as i64);
 }

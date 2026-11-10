@@ -354,12 +354,17 @@ impl<'s> Analyzer<'s> {
                 let decl_type = match var {
                     Assignable::Var(var) => self.check_var(var, var_span),
                     Assignable::Ptr(ptr, size) => {
-                        let typ = self.check_ptr(ptr, var_span);
-                        if let Some(typ) = typ.as_ref() {
-                            *size = Some(ValSize::from_bytes(self.types.size_of(*typ)).unwrap());
-                        }
+                        if let Some(typeid) = self.check_var(*ptr, var_span) {
+                            let typ = self.check_ptr(typeid, var_span);
+                            if let Some(typ) = typ.as_ref() {
+                                *size =
+                                    Some(ValSize::from_bytes(self.types.size_of(*typ)).unwrap());
+                            }
 
-                        typ
+                            typ
+                        } else {
+                            None
+                        }
                     }
                     Assignable::Index {
                         data,
@@ -553,7 +558,11 @@ impl<'s> Analyzer<'s> {
                 .check_var(var, &expr.span)
                 .map(|typeid| self.types.ptr_type_to(typeid)),
             ExprInner::Deref(var, typeid) => {
-                *typeid = self.check_ptr(var, &expr.span);
+                // *typeid = self.check_ptr(var, &expr.span);
+                if let Some(expr_typeid) = self.expression(var, None) {
+                    *typeid = self.check_ptr(expr_typeid, &var.span);
+                }
+
                 *typeid
             }
 
@@ -564,7 +573,7 @@ impl<'s> Analyzer<'s> {
                     if type1 == type2 {
                         if let Some(type_sign) = self.types.get(type1).sign() {
                             *expr_sign = Some(type_sign);
-                            expr.typ = Some(type1.clone());
+                            expr.typ = Some(type1);
                             return Some(type1);
                         }
 
@@ -1043,22 +1052,26 @@ impl<'s> Analyzer<'s> {
         None
     }
 
-    fn check_ptr(&mut self, symbol: &str, span: &Span) -> Option<TypeId> {
-        if let Some(typeid) = self.check_var(symbol, span) {
-            let typeinfo = self.types.get(typeid);
-            match typeinfo.deref_type() {
-                Some(typ) => return Some(typ),
-                typ => {
-                    let msg = format!("cannot derefence type {}", self.types.display(typeid));
-                    self.err_ctx
-                        .error(span.clone())
-                        .with_message("invalid pointer deref")
-                        .with_label(span.clone(), msg)
-                        .report();
-                }
+    fn check_ptr(&mut self, typeid: TypeId, span: &Span) -> Option<TypeId> {
+        // if let Some(typeid) = self.check_var(symbol, span) {
+        let typeinfo = self.types.get(typeid);
+        match typeinfo.deref_type() {
+            Some(typ) => return Some(typ),
+            None => {
+                println!("ERROR!");
+                let msg = format!("cannot derefence type {}", self.types.display(typeid));
+                self.err_ctx
+                    .error(span.clone())
+                    .with_message("invalid pointer deref")
+                    .with_label(span.clone(), msg)
+                    .report();
             }
         }
+        // } else {
+        //     println!("ELSE");
+        // }
 
+        println!("NONE");
         None
     }
 }

@@ -526,10 +526,20 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 SourceVal::VReg(dest)
             }
             ExprInner::Deref(var, typ) => {
-                let ptr = self.get_vreg(ValSize::Doubleword);
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let ptr = self.flatten_expr(*var, None);
+                let ptr = self.src_to_vreg(ptr);
 
-                self.load_var(var, ptr);
+                // let ptr = self.get_vreg(ValSize::Doubleword);
+                let dest = dest.unwrap_or_else(|| {
+                    self.get_vreg(type_size.expect("no type size specified for deref type"))
+                });
+                // let dest = dest.unwrap_or_else(|| {
+                //     self.get_vreg(
+                //         type_size.unwrap_or_else(|| panic!("expected deref type for {}", var)),
+                //     )
+                // });
+
+                // self.load_var(var, ptr);
 
                 let size = self.analyzer.types.size_of(typ.unwrap());
                 if size > 8 {

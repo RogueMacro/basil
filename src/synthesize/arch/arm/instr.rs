@@ -1,6 +1,6 @@
 #![allow(clippy::unusual_byte_groupings)]
 
-use std::collections::HashMap;
+use std::{collections::HashMap, fmt};
 
 use ux::{i5, i6, i7, i12, i19, i21, i26, u9, u12};
 
@@ -11,19 +11,19 @@ use super::reg::Register;
 /// An Armv8 instruction.
 ///
 /// All Armv8 instructions are 32 bits long.
-pub trait Instruction: std::fmt::Debug {
-    fn encode(&self) -> u32;
-}
-
-impl Instruction for u32 {
-    fn encode(&self) -> u32 {
-        *self
-    }
-}
+// pub trait Instruction: std::fmt::Debug {
+//     fn encode(&self) -> u32;
+// }
+//
+// impl Instruction for u32 {
+//     fn encode(&self) -> u32 {
+//         *self
+//     }
+// }
 
 /// An immediate shift specifier with a 16-bit step size.
 #[repr(u32)]
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq)]
 pub enum ImmShift16 {
     L0 = 0,
     L16 = 1,
@@ -98,6 +98,15 @@ impl BranchOffset {
     }
 }
 
+// impl fmt::Display for BranchOffset {
+//     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+//         match self {
+//             BranchOffset::Fixed(offset) => offset.fmt(f),
+//             BranchOffset::Dynamic(label) => label.fmt(f),
+//         }
+//     }
+// }
+
 #[derive(Debug, Clone)]
 pub enum FnOffset {
     Fixed(i32),
@@ -134,12 +143,19 @@ pub enum PageAddr {
 }
 
 impl PageAddr {
-    pub fn link(&mut self, index: i32, str_table_offset: usize, bss_offset: u64) {
+    pub fn link(
+        &mut self,
+        index: i32,
+        code_offset: usize,
+        str_table_offset: usize,
+        bss_offset: u64,
+    ) {
         match self {
             PageAddr::Fixed(_) => (),
             PageAddr::String(rel_offset) => {
                 let abs_offset = str_table_offset + *rel_offset;
-                let page_addr = i21::new((abs_offset / 4096) as i32);
+                let pc = code_offset as i32 + index * 4;
+                let page_addr = i21::new((abs_offset >> 12) as i32 - (pc >> 12));
                 *self = PageAddr::Fixed(page_addr);
             }
             PageAddr::Bss(rel_offset) => {
@@ -190,7 +206,7 @@ impl AddImmVal {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum EitherReg {
     Virt(VirtualReg),
     Phys(Register),
@@ -214,7 +230,7 @@ impl EitherReg {
     }
 }
 
-#[derive(Debug, Clone)]
+#[derive(Debug, Clone, Copy)]
 pub enum EitherOffset {
     Reg(EitherReg),
     Imm(u12),
@@ -225,6 +241,40 @@ impl EitherOffset {
         match self {
             Self::Reg(er) => er.to_virtual(),
             Self::Imm(_) => None,
+        }
+    }
+
+    pub fn fmt_size(&self, size: ValSize) -> EitherOffsetFmtSize {
+        EitherOffsetFmtSize {
+            offset: *self,
+            size,
+        }
+    }
+}
+
+pub struct EitherOffsetFmtSize {
+    offset: EitherOffset,
+    size: ValSize,
+}
+
+impl fmt::Display for EitherOffsetFmtSize {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self.offset {
+            EitherOffset::Reg(EitherReg::Virt(vreg)) => vreg.fmt(f),
+            EitherOffset::Reg(EitherReg::Phys(reg)) => reg.fmt(f),
+            EitherOffset::Imm(num) => {
+                fmt::LowerHex::fmt(&(Into::<u16>::into(num) as u64 * self.size.to_bytes()), f)
+            }
+        }
+    }
+}
+
+impl fmt::Display for EitherOffset {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            EitherOffset::Reg(EitherReg::Virt(vreg)) => vreg.fmt(f),
+            EitherOffset::Reg(EitherReg::Phys(reg)) => reg.fmt(f),
+            EitherOffset::Imm(num) => fmt::LowerHex::fmt(num, f),
         }
     }
 }
@@ -743,6 +793,7 @@ impl Inst<Register> {
     pub fn link(
         &mut self,
         index: i32,
+        code_offset: usize,
         fn_map: &HashMap<String, usize>,
         str_table_offset: usize,
         bss_offset: u64,
@@ -750,7 +801,9 @@ impl Inst<Register> {
         match self {
             Inst::BranchLink { offset } => offset.fix(index, fn_map),
 
-            Inst::Adrp { page_addr, .. } => page_addr.link(index, str_table_offset, bss_offset),
+            Inst::Adrp { page_addr, .. } => {
+                page_addr.link(index, code_offset, str_table_offset, bss_offset)
+            }
 
             Inst::AddImm { imm, .. } => imm.link(index, str_table_offset, bss_offset),
 
@@ -1090,20 +1143,20 @@ impl Inst<Register> {
 /// Encoding:
 /// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
 /// 1  1  0  0  1  0  1  1  shift 0  Rm             imm6              1  1  1  1  1  Rd
-#[derive(Debug, Clone, Copy)]
-pub struct Neg {
-    src: Register,
-    dest: Register,
-}
-
-impl Instruction for Neg {
-    fn encode(&self) -> u32 {
-        let src = self.src as u32;
-        let dest = self.dest as u32;
-
-        (0b11001011_00_0_00000_000000_11111 << 20) | (src << 16) | dest
-    }
-}
+// #[derive(Debug, Clone, Copy)]
+// pub struct Neg {
+//     src: Register,
+//     dest: Register,
+// }
+//
+// impl Instruction for Neg {
+//     fn encode(&self) -> u32 {
+//         let src = self.src as u32;
+//         let dest = self.dest as u32;
+//
+//         (0b11001011_00_0_00000_000000_11111 << 20) | (src << 16) | dest
+//     }
+// }
 
 /// NOP instruction.
 ///
@@ -1112,11 +1165,12 @@ impl Instruction for Neg {
 /// Encoding:
 /// 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
 /// 1  1  0  1  0  1  0  1  0  0  0  0  0  0  1  1  0  0  1  0  0  0  0  0  0  0  0  1  1  1  1  1
-#[derive(Debug, Clone, Copy)]
-pub struct Nop;
-
-impl Instruction for Nop {
-    fn encode(&self) -> u32 {
-        0b11010101000000110010000000011111
-    }
-}
+// #[derive(Debug, Clone, Copy)]
+// pub struct Nop;
+//
+// impl Instruction for Nop {
+//     fn encode(&self) -> u32 {
+//         0b11010101000000110010000000011111
+//     }
+// }
+fn _a() {}

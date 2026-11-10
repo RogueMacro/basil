@@ -7,7 +7,10 @@ use std::{
 
 use basil::{
     Compiler,
-    synthesize::{arch::arm::ArmAssembler, exe::mac::AppleExecutable},
+    synthesize::{
+        arch::{Assembler, LinkableCode, arm::ArmAssembler},
+        exe::mac::AppleExecutable,
+    },
 };
 use clap::{Parser, Subcommand};
 use colored::Colorize;
@@ -32,10 +35,15 @@ enum Command {
     },
     Run {
         file: PathBuf,
+
+        #[arg(long = "vm", help = "Run the ARM instruction using a debug VM")]
+        vm: bool,
     },
 }
 
 fn main() -> Result<(), Error> {
+    color_eyre::install().expect("color-eyre init failed");
+
     let args = Cli::parse();
 
     if let Err(err) = cli(args) {
@@ -51,15 +59,23 @@ fn cli(args: Cli) -> Result<(), Error> {
         Command::Build { file, asm, ir } => {
             build(&file, asm, ir)?;
         }
-        Command::Run { file } => {
-            build_and_run(&file)?;
+        Command::Run { file, vm } => {
+            build_and_run(&file, vm)?;
         }
     }
 
     Ok(())
 }
 
-fn build_and_run(file: &Path) -> Result<(), Error> {
+fn build_and_run(file: &Path, use_vm: bool) -> Result<(), Error> {
+    if use_vm {
+        let code = build_vm(file)?;
+
+        println!("{:>12} Arm VM", "Launching".bright_green().bold());
+        basil::vm::arm::debug_tui(code);
+        return Ok(());
+    }
+
     let exe = build(file, false, false)?;
 
     println!(
@@ -81,6 +97,24 @@ fn build_and_run(file: &Path) -> Result<(), Error> {
     }
 
     std::process::exit(status.code().unwrap_or(-1));
+}
+
+fn build_vm(file: &Path) -> Result<LinkableCode<ArmAssembler>, Error> {
+    let Some(module) = file.file_stem() else {
+        return Err(Error::InvalidFile);
+    };
+
+    println!(
+        "{:>12} {}",
+        "Compiling".bright_green().bold(),
+        module.to_string_lossy(),
+    );
+
+    let compiler = Compiler::<AppleExecutable, ArmAssembler>::default();
+
+    compiler
+        .compile_for_vm(file)
+        .map_err(Error::CompilationFailed)
 }
 
 fn build(file: &Path, asm: bool, ir: bool) -> Result<PathBuf, Error> {

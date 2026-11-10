@@ -88,12 +88,12 @@ impl Executable for AppleExecutable {
             + size_of::<SymTabCommand>();
 
         let code_size = code.size();
-        let str_literal_size: usize = code.str_literals().iter().map(|s| s.len() + 1).sum();
+        let str_literal_size: usize = code.str_literals().iter().map(|(_, s)| s.len() + 1).sum();
 
         let str_literal_offset = text_data_offset + code_size;
         let text_segment_end = page_align(text_data_offset as u64 + code_size as u64);
         let bss_offset = text_segment_end;
-        let code = code.link(str_literal_offset, bss_offset);
+        let code = code.link(text_data_offset, str_literal_offset, bss_offset);
 
         let MachineCode {
             instructions,
@@ -194,7 +194,7 @@ impl Executable for AppleExecutable {
             section_name: b"__bss\0\0\0\0\0\0\0\0\0\0\0".to_owned(),
             segment_name: b"__DATA\0\0\0\0\0\0\0\0\0\0".to_owned(),
             addr: data_segment.vmaddr,
-            size: 64,
+            size: 64, // TODO: what?
             offset: 0,
             align: 3,
             reloff: 0,
@@ -343,7 +343,7 @@ impl Executable for AppleExecutable {
         vec.extend(
             str_literals
                 .iter()
-                .flat_map(|s| CString::from_str(s).unwrap().into_bytes_with_nul()),
+                .flat_map(|(_, s)| CString::from_str(s).unwrap().into_bytes_with_nul()),
         );
         vec.extend(&vec![0u8; text_seg_padding]);
         vec.extend(nlists.iter().flat_map(bytes_of));

@@ -15,7 +15,7 @@ use crate::{
             builtin::SyscallType,
             instr::{
                 AddImmVal, BranchOffset, EitherOffset, EitherReg, FnOffset, ImmShift16, Inst,
-                Instruction, PageAddr,
+                PageAddr,
             },
             reg::Register,
         },
@@ -32,27 +32,30 @@ type InstrIndex = usize;
 
 #[derive(Default)]
 pub struct ArmAssembler {
-    code: MachineCode,
+    pub code: MachineCode,
     functions: HashMap<String, InstrIndex>,
     fn_calls: Vec<(String, InstrIndex)>,
     stacks: Vec<i12>,
-    str_literal_offsets: HashMap<StrId, usize>,
+    pub str_literal_offsets: HashMap<StrId, usize>,
 
     lazy_emitters: Vec<Box<dyn Fn(&mut ArmAssembler, usize)>>,
-    instructions: Vec<Inst<Register>>,
+    pub instructions: Vec<Inst<Register>>,
     // bb_args: Vec<(usize, Vec<VirtualReg>)>,
     empty_label_map: HashMap<Label, i32>,
 }
 
 impl Assembler for ArmAssembler {
+    type Instruction = Inst<Register>;
+
     fn assemble(ir: IR, main_fn: &str) -> LinkableCode<Self> {
         let mut assembler = ArmAssembler::default();
 
         let mut str_offset = 0;
         for (string, id) in ir.strings {
+            let len = string.len();
             assembler.str_literal_offsets.insert(id, str_offset);
-            str_offset += string.len() + 1; // with zero-byte
-            assembler.code.str_literals.push(string);
+            assembler.code.str_literals.push((str_offset, string));
+            str_offset += len + 1; // with zero-byte
         }
 
         for item in ir.items {
@@ -64,6 +67,8 @@ impl Assembler for ArmAssembler {
                 size_map,
                 body,
             } = item;
+
+            println!("function {} / {}", name, stack_size);
 
             let offset = assembler.instructions.len() as u64;
             // TODO: name as reference instead of owned
@@ -113,11 +118,16 @@ impl Assembler for ArmAssembler {
         self.instructions.len() * 4
     }
 
-    fn str_literals(&self) -> &[String] {
+    fn str_literals(&self) -> &[(StrId, String)] {
         &self.code.str_literals
     }
 
-    fn into_machine_code(mut self, str_table_offset: usize, bss_offset: u64) -> MachineCode {
+    fn into_machine_code(
+        mut self,
+        code_offset: usize,
+        str_table_offset: usize,
+        bss_offset: u64,
+    ) -> MachineCode {
         self.code
             .instructions
             .extend(
@@ -125,12 +135,22 @@ impl Assembler for ArmAssembler {
                     .into_iter()
                     .enumerate()
                     .flat_map(|(i, mut inst)| {
-                        inst.link(i as i32, &self.functions, str_table_offset, bss_offset);
+                        inst.link(
+                            i as i32,
+                            code_offset,
+                            &self.functions,
+                            str_table_offset,
+                            bss_offset,
+                        );
                         inst.encode().to_le_bytes()
                     }),
             );
 
         self.code
+    }
+
+    fn into_instructions(self) -> Vec<Self::Instruction> {
+        self.instructions
     }
 }
 
@@ -282,7 +302,6 @@ impl ProcedureGen {
                     }
                     Op::LoadArg { offset, dest } => {
                         let size = *size_map.get(&dest).unwrap();
-                        println!("load {} = {} * {}", dest, offset, size.to_bytes());
                         proc.emit(Inst::Load {
                             base: EitherReg::Phys(Register::FP),
                             offset: EitherOffset::Imm(u12::new(
@@ -469,20 +488,8 @@ impl ProcedureGen {
             proc.instructions[first_op_index].1 = InstMarker::FirstInBB(bb.label);
         }
 
-        for i in proc.instructions.iter() {
-            if matches!(i.1, InstMarker::FirstInBB(Label::Anon(10))) {
-                println!("BEFORE ALLOC");
-            }
-        }
-
         let (instructions, extra_stack_size) =
             reg::allocate(proc.instructions, stack_size as u16, size_map);
-
-        for i in instructions.iter() {
-            if matches!(i.1, InstMarker::FirstInBB(Label::Anon(10))) {
-                println!("AFTER ALLOC");
-            }
-        }
 
         let mut label_map = HashMap::from_iter([(Label::End, instructions.len() as i32)]);
         for (i, (_, marker)) in instructions.iter().enumerate() {
@@ -496,6 +503,7 @@ impl ProcedureGen {
 
         // align to 16 bytes
         let stack_size = ((stack_size as u16 + extra_stack_size + 15) >> 4) << 4;
+        println!("stack size: {}", stack_size);
 
         assembler.emit_many([
             Inst::StorePair {
