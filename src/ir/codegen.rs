@@ -18,7 +18,7 @@ use crate::{
     ir::{BasicBlock, Condition, IR, Item, Label, Op, SourceVal, Terminator, ValSize, VirtualReg},
 };
 
-const ALLOC_FN: &str = "std::alloc";
+const ALLOC_FN: &str = "std::alloc::alloc";
 
 impl<'s> IR<'s> {
     pub fn generate(ast: ValidAST<'s>, analyzer: &Analyzer<'s>) -> IR<'s> {
