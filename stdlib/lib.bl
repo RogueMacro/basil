@@ -3,10 +3,10 @@
 
 package std;
 
-mod fmt;
-mod syscall;
 mod alloc;
-
+mod fmt;
+mod fs;
+mod syscall;
 
 fn strlen(buf: *char) -> i64 {
   ptr := buf;

@@ -6,8 +6,8 @@ use ux::{i7, i12, i19, i26, u9, u12, u48};
 
 use crate::{
     ir::{
-        BasicBlock, Condition, IR, Item, Label, Op, SourceVal, StrId, Terminator, ValSize,
-        VirtualReg,
+        BasicBlock, Condition, IR, Item, Label, Op, SourceVal, StrId, Terminator, VirtualReg,
+        VregSize,
     },
     synthesize::arch::{
         Assembler, LinkableCode, MachineCode,
@@ -67,8 +67,6 @@ impl Assembler for ArmAssembler {
                 size_map,
                 body,
             } = item;
-
-            println!("function {} / {}", name, stack_size);
 
             let offset = assembler.instructions.len() as u64;
             // TODO: name as reference instead of owned
@@ -181,7 +179,7 @@ impl ProcedureGen {
         assembler: &mut ArmAssembler,
         stack: HashMap<VirtualReg, u32>,
         stack_size: u32,
-        size_map: &HashMap<VirtualReg, ValSize>,
+        size_map: &HashMap<VirtualReg, VregSize>,
         body: Vec<BasicBlock>,
     ) {
         let mut proc = ProcedureGen::default();
@@ -261,14 +259,11 @@ impl ProcedureGen {
                         }
                     }
                     Op::Store { src, stack_offset } => {
-                        let SourceVal::VReg(source) = src else {
-                            panic!()
-                        };
-
-                        let size = *size_map.get(&source).unwrap();
+                        let size = *size_map.get(&src).unwrap();
+                        assert!(size.to_bytes() <= 8);
 
                         proc.emit(Inst::Store {
-                            source,
+                            src,
                             base: EitherReg::Phys(Register::SP),
                             offset: EitherOffset::Imm(u12::new(
                                 stack_offset as u16 / size.to_bytes() as u16,
@@ -343,7 +338,7 @@ impl ProcedureGen {
                         offset,
                     } => {
                         proc.emit(Inst::Store {
-                            source: src,
+                            src,
                             base: EitherReg::Virt(ptr),
                             offset: EitherOffset::Imm(u12::new(
                                 offset as u16 / size.to_bytes() as u16,
@@ -426,10 +421,10 @@ impl ProcedureGen {
 
                         for (i, arg) in args.iter().enumerate() {
                             proc.emit(Inst::Store {
-                                source: *arg,
+                                src: *arg,
                                 base: EitherReg::Phys(Register::SP),
                                 offset: EitherOffset::Imm(u12::new(i as u16)),
-                                size: ValSize::Doubleword,
+                                size: VregSize::Doubleword,
                             });
                         }
 
@@ -489,7 +484,7 @@ impl ProcedureGen {
         }
 
         let (instructions, extra_stack_size) =
-            reg::allocate(proc.instructions, stack_size as u16, size_map);
+            reg::allocate(proc.instructions, stack_size as u16, stack, size_map);
 
         let mut label_map = HashMap::from_iter([(Label::End, instructions.len() as i32)]);
         for (i, (_, marker)) in instructions.iter().enumerate() {
@@ -503,7 +498,6 @@ impl ProcedureGen {
 
         // align to 16 bytes
         let stack_size = ((stack_size as u16 + extra_stack_size + 15) >> 4) << 4;
-        println!("stack size: {}", stack_size);
 
         assembler.emit_many([
             Inst::StorePair {

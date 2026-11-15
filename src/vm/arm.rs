@@ -25,7 +25,7 @@ use ratatui::{
 use strum::IntoEnumIterator;
 
 use crate::{
-    ir::{Condition, StrId, ValSize},
+    ir::{Condition, StrId, VregSize},
     synthesize::arch::{
         LinkableCode,
         arm::{
@@ -613,10 +613,11 @@ impl VM {
                 let addr = (base + offset) as usize;
                 let bytes = &self.memory[addr..(addr + size.to_bytes() as usize)];
                 let value = match size {
-                    ValSize::Byte => u8::from_le_bytes(bytes.try_into().unwrap()) as u64,
-                    ValSize::Halfword => u16::from_le_bytes(bytes.try_into().unwrap()) as u64,
-                    ValSize::Word => u32::from_le_bytes(bytes.try_into().unwrap()) as u64,
-                    ValSize::Doubleword => u64::from_le_bytes(bytes.try_into().unwrap()),
+                    VregSize::Byte => u8::from_le_bytes(bytes.try_into().unwrap()) as u64,
+                    VregSize::Halfword => u16::from_le_bytes(bytes.try_into().unwrap()) as u64,
+                    VregSize::Word => u32::from_le_bytes(bytes.try_into().unwrap()) as u64,
+                    VregSize::Doubleword => u64::from_le_bytes(bytes.try_into().unwrap()),
+                    VregSize::Bytes(bytes) => panic!(),
                 };
 
                 self.registers.insert(*dest, value);
@@ -680,7 +681,7 @@ impl VM {
                 self.current_inst = jump_to as usize / 4;
             }
             Inst::Store {
-                source,
+                src: source,
                 base,
                 offset,
                 size,
@@ -695,10 +696,11 @@ impl VM {
                 let offset = (base + offset) as usize;
 
                 let bytes = match size {
-                    ValSize::Byte => vec![value as u8],
-                    ValSize::Halfword => (value as u16).to_le_bytes().to_vec(),
-                    ValSize::Word => (value as u32).to_le_bytes().to_vec(),
-                    ValSize::Doubleword => value.to_le_bytes().to_vec(),
+                    VregSize::Byte => vec![value as u8],
+                    VregSize::Halfword => (value as u16).to_le_bytes().to_vec(),
+                    VregSize::Word => (value as u32).to_le_bytes().to_vec(),
+                    VregSize::Doubleword => value.to_le_bytes().to_vec(),
+                    _ => todo!(),
                 };
 
                 self.memory
@@ -830,19 +832,19 @@ fn display_inst(
             dest,
             size,
         } => match *size {
-            ValSize::Byte => format!(
+            VregSize::Byte => format!(
                 "ldrb {}, [{}, #0x{}]",
                 dest.as_str_32bit(),
                 base.expect_phys(),
                 offset.fmt_size(*size)
             ),
-            ValSize::Halfword => format!(
+            VregSize::Halfword => format!(
                 "ldrh {}, [{}, #0x{}]",
                 dest.as_str_32bit(),
                 base.expect_phys(),
                 offset.fmt_size(*size)
             ),
-            ValSize::Word | ValSize::Doubleword => {
+            VregSize::Word | VregSize::Doubleword => {
                 format!(
                     "ldr {}, [{}, #0x{}]",
                     dest,
@@ -850,6 +852,7 @@ fn display_inst(
                     offset.fmt_size(*size)
                 )
             }
+            _ => todo!(),
         },
         Inst::LoadPair {
             base,
@@ -888,24 +891,24 @@ fn display_inst(
         Inst::Neg { val, dest } => format!("neg {}, {}", dest, val),
         Inst::Ret { value: _ } => String::from("ret"),
         Inst::Store {
-            source,
+            src: source,
             base,
             offset,
             size,
         } => match *size {
-            ValSize::Byte => format!(
+            VregSize::Byte => format!(
                 "strb {}, [{}, #0x{}]",
                 source.as_str_32bit(),
                 base.expect_phys(),
                 offset.fmt_size(*size)
             ),
-            ValSize::Halfword => format!(
+            VregSize::Halfword => format!(
                 "strh {}, [{}, #0x{}]",
                 source.as_str_32bit(),
                 base.expect_phys(),
                 offset.fmt_size(*size)
             ),
-            ValSize::Word | ValSize::Doubleword => {
+            VregSize::Word | VregSize::Doubleword => {
                 format!(
                     "str {}, [{}, #0x{}]",
                     source,
@@ -913,6 +916,7 @@ fn display_inst(
                     offset.fmt_size(*size)
                 )
             }
+            _ => todo!(),
         },
         Inst::StorePair {
             base,

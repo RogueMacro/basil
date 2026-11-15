@@ -1,0 +1,17 @@
+
+// enum OpenFlags {
+//     ReadOnly = 0,
+//     WriteOnly = 1
+//     ReadWrite = 2
+// }
+
+struct File {
+    handle: i64
+}
+
+impl File {
+    fn open(filename: *char) -> File {
+        h := 1;
+        return File { handle: h };
+    }
+}

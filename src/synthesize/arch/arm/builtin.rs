@@ -1,7 +1,7 @@
 use ux::u12;
 
 use crate::{
-    ir::ValSize,
+    ir::VregSize,
     synthesize::arch::{
         Assembler,
         arm::{
@@ -18,7 +18,12 @@ type BuiltinFn = fn(&mut ArmAssembler);
 const PREFIX: &str = "std::syscall::";
 
 pub fn assemble(asm: &mut ArmAssembler) {
-    let builtins: &[(&str, BuiltinFn)] = &[("exit", exit), ("write", write), ("mmap", mmap)];
+    let builtins: &[(&str, BuiltinFn)] = &[
+        ("exit", exit),
+        ("write", write),
+        ("open", open),
+        ("mmap", mmap),
+    ];
 
     for (name, assemble_fn) in builtins {
         let offset_in_bytes = asm.code_size();
@@ -37,7 +42,7 @@ fn load_arg(asm: &mut ArmAssembler, fp_offset: u32, dest: Reg) {
         base: EitherReg::Phys(Reg::SP),
         offset: EitherOffset::Imm(u12::new(fp_offset as u16)),
         dest,
-        size: ValSize::Doubleword,
+        size: VregSize::Doubleword,
     });
 }
 
@@ -46,6 +51,13 @@ pub fn write(asm: &mut ArmAssembler) {
     load_arg(asm, 1, Reg::X1);
     load_arg(asm, 2, Reg::X2);
     syscall(asm, SyscallType::Write);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+pub fn open(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    load_arg(asm, 1, Reg::X1);
+    syscall(asm, SyscallType::Open);
     asm.emit(Inst::Ret { value: Reg::X0 });
 }
 
@@ -78,7 +90,10 @@ fn syscall(asm: &mut ArmAssembler, typ: SyscallType) {
 #[repr(u16)]
 pub enum SyscallType {
     Exit = 1,
+    Read = 3,
     Write = 4,
+    Open = 5,
+    Close = 6,
     MUnmap = 73,
     MMap = 197,
 }

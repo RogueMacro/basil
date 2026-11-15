@@ -4,7 +4,7 @@ use std::{collections::HashMap, fmt};
 
 use ux::{i5, i6, i7, i12, i19, i21, i26, u9, u12};
 
-use crate::ir::{Condition, Label, Terminator, ValSize, VirtualReg};
+use crate::ir::{Condition, Label, Terminator, VirtualReg, VregSize};
 
 use super::reg::Register;
 
@@ -244,7 +244,7 @@ impl EitherOffset {
         }
     }
 
-    pub fn fmt_size(&self, size: ValSize) -> EitherOffsetFmtSize {
+    pub fn fmt_size(&self, size: VregSize) -> EitherOffsetFmtSize {
         EitherOffsetFmtSize {
             offset: *self,
             size,
@@ -254,7 +254,7 @@ impl EitherOffset {
 
 pub struct EitherOffsetFmtSize {
     offset: EitherOffset,
-    size: ValSize,
+    size: VregSize,
 }
 
 impl fmt::Display for EitherOffsetFmtSize {
@@ -402,7 +402,7 @@ pub enum Inst<R> {
         base: EitherReg,
         offset: EitherOffset,
         dest: R,
-        size: ValSize,
+        size: VregSize,
     },
 
     /// LDP instruction.
@@ -508,11 +508,11 @@ pub enum Inst<R> {
     /// - Rn: base pointer
     /// - Rt: source register
     Store {
-        source: R,
+        src: R,
         base: EitherReg,
         /// Multiple of 8 bytes.
         offset: EitherOffset,
-        size: ValSize,
+        size: VregSize,
     },
 
     /// STP instruction.
@@ -609,7 +609,7 @@ impl Inst<VirtualReg> {
             Inst::Movk { dest, .. } => (None, None, None, Some(*dest)),
             Inst::Movz { dest, .. } => (None, None, None, Some(*dest)),
             Inst::Store {
-                source,
+                src: source,
                 base,
                 offset,
                 ..
@@ -729,7 +729,7 @@ impl Inst<VirtualReg> {
             Inst::Store {
                 offset, base, size, ..
             } => Inst::Store {
-                source: regs.0.unwrap(),
+                src: regs.0.unwrap(),
                 base: regs.1.map(EitherReg::Phys).unwrap_or(base),
                 offset: regs
                     .2
@@ -955,7 +955,7 @@ impl Inst<Register> {
             } => {
                 let base = base.expect_phys() as u32;
                 let dest = dest as u32;
-                let size = size as u32;
+                let size = size_discriminant(size);
 
                 match offset {
                     EitherOffset::Reg(reg) => {
@@ -1060,12 +1060,12 @@ impl Inst<Register> {
             Inst::Store {
                 base,
                 offset,
-                source,
+                src: source,
                 size,
             } => {
                 let base = base.expect_phys() as u32;
                 let source = source as u32;
-                let size = size as u32;
+                let size = size_discriminant(size);
 
                 match offset {
                     EitherOffset::Reg(either_reg) => todo!(),
@@ -1173,4 +1173,13 @@ impl Inst<Register> {
 //         0b11010101000000110010000000011111
 //     }
 // }
-fn _a() {}
+
+fn size_discriminant(size: VregSize) -> u32 {
+    match size {
+        VregSize::Byte => 0,
+        VregSize::Halfword => 1,
+        VregSize::Word => 2,
+        VregSize::Doubleword => 3,
+        VregSize::Bytes(_) => panic!("any numbers of bytes does not have a size discriminant"),
+    }
+}

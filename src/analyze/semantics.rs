@@ -9,7 +9,7 @@ use crate::{
         ast::{AST, Assignable, ExprInner, Expression, FnDef, FnPtr, IfElse, Item, Statement},
         semantics::types::{ParsedType, Sign, TypeId, TypeKind, TypeMap},
     },
-    ir::ValSize,
+    ir::VregSize,
 };
 
 use itertools::Itertools;
@@ -155,7 +155,7 @@ impl<'s> Analyzer<'s> {
 
         let mut used_functions: HashSet<String> = HashSet::new();
         used_functions.insert(self.main_fn.clone());
-        used_functions.insert("std::alloc".to_owned());
+        used_functions.insert(crate::ir::codegen::ALLOC_FN.to_owned());
 
         let mut queue: Vec<&str> = vec![&self.main_fn];
 
@@ -357,8 +357,7 @@ impl<'s> Analyzer<'s> {
                         if let Some(typeid) = self.check_var(*ptr, var_span) {
                             let typ = self.check_ptr(typeid, var_span);
                             if let Some(typ) = typ.as_ref() {
-                                *size =
-                                    Some(ValSize::from_bytes(self.types.size_of(*typ)).unwrap());
+                                *size = Some(VregSize::from_bytes(self.types.size_of(*typ)));
                             }
 
                             typ
@@ -374,8 +373,7 @@ impl<'s> Analyzer<'s> {
                         let item_type = self.check_index(data, index, var_span);
 
                         if let Some(item_type) = item_type {
-                            *val_size =
-                                Some(ValSize::from_bytes(self.types.size_of(item_type)).unwrap());
+                            *val_size = Some(VregSize::from_bytes(self.types.size_of(item_type)));
                         }
 
                         None
@@ -573,7 +571,7 @@ impl<'s> Analyzer<'s> {
                     if type1 == type2 {
                         if let Some(type_sign) = self.types.get(type1).sign() {
                             *expr_sign = Some(type_sign);
-                            expr.typ = Some(type1);
+                            expr.typeid = Some(type1);
                             return Some(type1);
                         }
 
@@ -609,7 +607,7 @@ impl<'s> Analyzer<'s> {
                         let sign2 = self.types.get(type2).sign();
                         if sign1 == sign2 {
                             *expr_sign = sign1;
-                            expr.typ = Some(type1.clone());
+                            expr.typeid = Some(type1.clone());
                             return Some(TypeId::bool());
                         }
 
@@ -729,7 +727,7 @@ impl<'s> Analyzer<'s> {
                         || ((expr_type == TypeId::i64() || expr_type == TypeId::u64())
                             && cast_to_is_ptr)
                     {
-                        expr.typ = Some(*cast_to);
+                        expr.typeid = Some(*cast_to);
                     } else {
                         let msg = format!(
                             "cannot cast from {} to {}",
@@ -755,7 +753,7 @@ impl<'s> Analyzer<'s> {
                 let item_type = self.check_index(data, index, &expr.span);
 
                 if let Some(item_type) = item_type.as_ref() {
-                    *val_size = Some(ValSize::from_bytes(self.types.size_of(*item_type)).unwrap());
+                    *val_size = Some(VregSize::from_bytes(self.types.size_of(*item_type)));
                 }
 
                 item_type
@@ -811,7 +809,7 @@ impl<'s> Analyzer<'s> {
                     FnPtr::Expr(expr) => {
                         if let Expression {
                             inner: ExprInner::MemberAccess(parent, member, _),
-                            typ,
+                            typeid: typ,
                             span,
                         } = expr.as_mut()
                             && let Some(parent_type) = self.expression(parent, None)
@@ -918,7 +916,11 @@ impl<'s> Analyzer<'s> {
                 }
             }
 
-            ExprInner::Construct { typ, fields } => {
+            ExprInner::Construct {
+                typeid: typ,
+                fields,
+                heap,
+            } => {
                 let typeinfo = self.types.get(*typ);
                 if let TypeKind::Struct {
                     fields: type_fields,
@@ -987,13 +989,17 @@ impl<'s> Analyzer<'s> {
                         .report();
                 }
 
-                Some(self.types.ptr_type_to(*typ))
+                if *heap {
+                    Some(self.types.ptr_type_to(*typ))
+                } else {
+                    Some(*typ)
+                }
             }
 
             ExprInner::SizeOf(typ) => Some(TypeId::u64()),
         };
 
-        expr.typ = typeid;
+        expr.typeid = typeid;
         typeid
     }
 

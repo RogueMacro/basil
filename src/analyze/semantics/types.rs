@@ -693,7 +693,11 @@ impl<'s, 'e> Resolver<'e> {
         imports: &[(&str, Span)],
         expr: Expression<'s, (ParsedType<'s>, Span)>,
     ) -> Expression<'s, TypeId> {
-        let Expression { inner, typ, span } = expr;
+        let Expression {
+            inner,
+            typeid: typ,
+            span,
+        } = expr;
 
         let typ = typ.map(|(typ, span)| self.resolve_type(mangled_path, imports, typ, span));
 
@@ -756,21 +760,27 @@ impl<'s, 'e> Resolver<'e> {
                     .collect(),
             ),
             ExprInner::Construct {
-                typ: (typ, span),
+                typeid: (typ, span),
                 fields,
+                heap,
             } => ExprInner::Construct {
-                typ: self.resolve_type(mangled_path, imports, typ, span),
+                typeid: self.resolve_type(mangled_path, imports, typ, span),
                 fields: fields
                     .into_iter()
                     .map(|(name, expr)| (name, self.expression(mangled_path, imports, expr)))
                     .collect(),
+                heap,
             },
             ExprInner::SizeOf((typ, span)) => {
                 ExprInner::SizeOf(self.resolve_type(mangled_path, imports, typ, span))
             }
         };
 
-        Expression { inner, typ, span }
+        Expression {
+            inner,
+            typeid: typ,
+            span,
+        }
     }
 
     fn resolve_function(
@@ -800,7 +810,7 @@ impl<'s, 'e> Resolver<'e> {
                     // }
                     Expression {
                         inner: ExprInner::Ident(path),
-                        typ: _,
+                        typeid: _,
                         span,
                     } => {
                         let local_function = format!("{}::{}", mangled_path, path);

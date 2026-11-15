@@ -15,10 +15,10 @@ use crate::{
             types::{ParsedType, Sign, TypeId, TypeKind, TypeMap},
         },
     },
-    ir::{BasicBlock, Condition, IR, Item, Label, Op, SourceVal, Terminator, ValSize, VirtualReg},
+    ir::{BasicBlock, Condition, IR, Item, Label, Op, SourceVal, Terminator, VirtualReg, VregSize},
 };
 
-const ALLOC_FN: &str = "std::alloc::alloc";
+pub const ALLOC_FN: &str = "std::alloc::alloc";
 
 impl<'s> IR<'s> {
     pub fn generate(ast: ValidAST<'s>, analyzer: &Analyzer<'s>) -> IR<'s> {
@@ -101,6 +101,8 @@ impl<'s> IR<'s> {
         //     panic!("ir is not ssa, duplicates: {:?}", dupes);
         // }
 
+        println!("{}", ir);
+
         ir
     }
 }
@@ -112,7 +114,7 @@ struct BlockBuilder<'ir, 'a, 's> {
     blocks: Vec<BasicBlock>,
     var_to_vreg: HashMap<&'s str, VirtualReg>,
     proc_args: HashMap<VirtualReg, u32>,
-    size_map: HashMap<VirtualReg, ValSize>,
+    size_map: HashMap<VirtualReg, VregSize>,
     stack: HashMap<VirtualReg, u32>,
     stack_size: u32,
     vreg_counter: u32,
@@ -173,7 +175,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
         Vec<BasicBlock>,
         HashMap<VirtualReg, u32>,
         u32,
-        HashMap<VirtualReg, ValSize>,
+        HashMap<VirtualReg, VregSize>,
     ) {
         self.consume(block);
         self.commit_block(Terminator::Branch { label: Label::End }, Label::End);
@@ -227,12 +229,14 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                         "variable declared twice"
                     );
 
-                    if expr.typ == Some(TypeId::unit()) {
+                    if expr.typeid == Some(TypeId::unit()) {
                         continue;
                     }
 
-                    let size = ValSize::from_bytes(self.analyzer.types.size_of(expr.typ.unwrap()))
-                        .unwrap();
+                    let size =
+                        VregSize::from_bytes(self.analyzer.types.size_of(expr.typeid.unwrap()));
+
+                    let is_construct = matches!(expr.inner, ExprInner::Construct { .. });
 
                     let (dest, stack_offset) = self.get_or_insert_stack_var(var, size);
                     let src = self.flatten_expr(expr, Some(dest));
@@ -242,24 +246,28 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                         self.block_decls.push(dest);
                     }
 
-                    self.block_ops.push(Op::Store {
-                        src: SourceVal::VReg(dest),
-                        stack_offset,
-                    });
+                    if !is_construct && size.to_bytes() > 8 {
+                        todo!()
+                    } else if !is_construct {
+                        self.block_ops.push(Op::Store {
+                            src: dest,
+                            stack_offset,
+                        });
+                    }
                 }
 
                 Statement::Assign { var, expr, .. } => {
-                    let size = ValSize::from_bytes(self.analyzer.types.size_of(expr.typ.unwrap()))
-                        .unwrap();
+                    let size =
+                        VregSize::from_bytes(self.analyzer.types.size_of(expr.typeid.unwrap()));
                     let src = self.flatten_expr(expr, None);
 
                     match var {
                         Assignable::Var(var) => {
-                            if let Some((offset, typ)) = self.ir.static_mem.get(&var) {
+                            if let Some((offset, typ)) = self.ir.static_mem.get(var) {
                                 let offset = *offset;
-                                let typeid = typ.clone();
+                                let typeid = *typ;
 
-                                let ptr = self.get_vreg(ValSize::Doubleword);
+                                let ptr = self.get_vreg(VregSize::Doubleword);
                                 let src = self.src_to_vreg(src);
 
                                 self.block_ops.push(Op::Assign {
@@ -272,7 +280,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                                     self.block_ops.push(Op::StorePointer {
                                         src,
                                         ptr,
-                                        size: ValSize::from_bytes(size).unwrap(),
+                                        size: VregSize::from_bytes(size),
                                         offset: 0,
                                     });
                                 } else {
@@ -283,7 +291,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
 
                                 self.block_ops.push(Op::Assign { src, dest });
                                 self.block_ops.push(Op::Store {
-                                    src: SourceVal::VReg(dest),
+                                    src: dest,
                                     stack_offset,
                                 });
                             }
@@ -311,7 +319,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                             let array = self.flatten_expr(*data, None);
                             let array_vreg = self.src_to_vreg(array);
 
-                            let ptr = self.get_vreg(ValSize::Doubleword);
+                            let ptr = self.get_vreg(VregSize::Doubleword);
 
                             let src = self.src_to_vreg(src);
 
@@ -343,7 +351,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                         }
                         Assignable::MemberAccess(parent, member) => {
                             let TypeKind::Pointer(value_typeid) =
-                                self.analyzer.types.get(parent.typ.unwrap()).kind
+                                self.analyzer.types.get(parent.typeid.unwrap()).kind
                             else {
                                 panic!()
                             };
@@ -493,8 +501,8 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
         expr: Expression<'s, TypeId>,
         dest: Option<VirtualReg>,
     ) -> SourceVal {
-        let type_size = self.analyzer.types.size_of(expr.typ.unwrap());
-        let type_size = ValSize::from_bytes(type_size);
+        let type_size = self.analyzer.types.size_of(expr.typeid.unwrap());
+        let type_size = VregSize::from_bytes(type_size);
 
         match expr.inner {
             ExprInner::Const(num, explicit_type) => SourceVal::Immediate(num),
@@ -506,16 +514,16 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             ExprInner::Bool(b) => SourceVal::Immediate(b as u64),
 
             ExprInner::Ident(var) => {
-                let dest = self.get_vreg(type_size.unwrap());
+                let dest = self.get_vreg(type_size);
 
-                self.load_var(&var, dest);
+                self.load_var(var, dest);
 
                 SourceVal::VReg(dest)
             }
             ExprInner::Pointer(var) => {
                 // let stack_offset = self.get_stack_offset(&var);
                 let val = *self.var_to_vreg.get(&var).unwrap();
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 if let Some(&offset) = self.proc_args.get(&val) {
                     self.block_ops.push(Op::AddressOfArg { offset, dest });
@@ -530,9 +538,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let ptr = self.src_to_vreg(ptr);
 
                 // let ptr = self.get_vreg(ValSize::Doubleword);
-                let dest = dest.unwrap_or_else(|| {
-                    self.get_vreg(type_size.expect("no type size specified for deref type"))
-                });
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
                 // let dest = dest.unwrap_or_else(|| {
                 //     self.get_vreg(
                 //         type_size.unwrap_or_else(|| panic!("expected deref type for {}", var)),
@@ -547,7 +553,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 }
                 self.block_ops.push(Op::LoadPointer {
                     ptr,
-                    size: ValSize::from_bytes(size).unwrap(),
+                    size: VregSize::from_bytes(size),
                     dest,
                 });
                 SourceVal::VReg(dest)
@@ -561,7 +567,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let a = self.src_to_vreg(a);
                 let b = self.src_to_vreg(b);
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 match op {
                     ArithmeticOp::Add => self.block_ops.push(Op::Add { a, b, dest }),
@@ -580,7 +586,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let expr1 = self.src_to_vreg(expr1);
                 let expr2 = self.src_to_vreg(expr2);
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 self.block_ops.push(Op::Compare {
                     a: expr1,
@@ -592,7 +598,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 SourceVal::VReg(dest)
             }
             ExprInner::Logical(lhs, rhs, op) => {
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 let lhs = self.flatten_expr(*lhs, None);
                 let lhs = self.src_to_vreg(lhs);
@@ -651,7 +657,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             ExprInner::Not(expr) => {
                 let val = self.flatten_expr(*expr, dest);
                 let val = self.src_to_vreg(val);
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 self.block_ops.push(Op::Not { val, dest });
 
@@ -661,7 +667,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             ExprInner::Negate(expr) => {
                 let val = self.flatten_expr(*expr, dest);
                 let val = self.src_to_vreg(val);
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 self.block_ops.push(Op::Negate { val, dest });
 
@@ -681,9 +687,9 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 let array = self.flatten_expr(*data, None);
                 let array_vreg = self.src_to_vreg(array);
 
-                let ptr = self.get_vreg(ValSize::Doubleword);
+                let ptr = self.get_vreg(VregSize::Doubleword);
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 let val_size = val_size.unwrap();
 
@@ -713,28 +719,39 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             }
 
             ExprInner::MemberAccess(parent, member, typeid) => {
-                let parent = self.flatten_expr(*parent, None);
-                let parent_vreg = self.src_to_vreg(parent);
+                let typeid = typeid.unwrap();
 
                 let offset = self
                     .analyzer
                     .types
-                    .offset_of_member(typeid.unwrap(), member)
+                    .offset_of_member(typeid, member)
                     .unwrap_or_else(|| {
                         panic!(
                             "type {} does not have member {}",
-                            self.analyzer.types.display(typeid.unwrap()),
+                            self.analyzer.types.display(typeid),
                             member
                         )
                     });
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size.unwrap()));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
-                self.block_ops.push(Op::LoadOffset {
-                    base: parent_vreg,
-                    offset: offset as u32,
-                    dest,
-                });
+                if self.analyzer.types.get(parent.typeid.unwrap()).is_ptr() {
+                    let parent = self.flatten_expr(*parent, None);
+                    let parent_vreg = self.src_to_vreg(parent);
+
+                    self.block_ops.push(Op::LoadOffset {
+                        base: parent_vreg,
+                        offset: offset as u32,
+                        dest,
+                    });
+                } else {
+                    let stack_offset = self.stack_offset_of_expr(*parent);
+
+                    self.block_ops.push(Op::Load {
+                        stack_offset: stack_offset + offset as u32,
+                        dest,
+                    })
+                }
 
                 SourceVal::VReg(dest)
             }
@@ -748,7 +765,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                     })
                     .collect();
 
-                let dest = dest.or_else(|| type_size.map(|s| self.get_vreg(s)));
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
 
                 let FnPtr::Named(function) = function else {
                     panic!()
@@ -757,46 +774,67 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 self.block_ops.push(Op::Call {
                     function: function.into_owned(),
                     args,
-                    dest,
+                    dest: Some(dest),
                 });
 
-                dest.map(SourceVal::VReg).unwrap_or(SourceVal::Immediate(0))
+                SourceVal::VReg(dest)
             }
 
-            ExprInner::Construct { typ, fields } => {
-                let size = self.analyzer.types.size_of(typ);
+            ExprInner::Construct {
+                typeid,
+                fields,
+                heap,
+            } => {
+                // TODO: get rid of VregSize, just use u32 instead
 
-                let size_vreg = self.get_vreg(ValSize::Doubleword);
-                let ptr_vreg = dest.unwrap_or_else(|| self.get_vreg(ValSize::Doubleword));
+                println!("- CONSTRUCT TYPE {} -", self.analyzer.types.display(typeid));
 
-                self.block_ops.push(Op::Assign {
-                    src: SourceVal::Immediate(size),
-                    dest: size_vreg,
-                });
-                self.block_ops.push(Op::Call {
-                    function: ALLOC_FN.to_owned(),
-                    args: vec![size_vreg],
-                    dest: Some(ptr_vreg),
-                });
+                let type_size = VregSize::Bytes(self.analyzer.types.size_of(typeid));
 
-                for (field, expr) in fields {
-                    let offset = self.analyzer.types.offset_of_member(typ, field).unwrap();
-
-                    let field_size = self.analyzer.types.size_of(expr.typ.unwrap());
-                    let field_size = ValSize::from_bytes(field_size).unwrap();
-
-                    let src = self.flatten_expr(expr, None);
-                    let src = self.src_to_vreg(src);
-
-                    self.block_ops.push(Op::StorePointer {
-                        src,
-                        ptr: ptr_vreg,
-                        size: field_size,
-                        offset: offset as u32,
+                if !heap {
+                    println!("=> heap: false");
+                    let dest = dest.unwrap_or_else(|| {
+                        let vreg = self.get_vreg(type_size);
+                        self.stack.insert(vreg, self.stack_size);
+                        self.stack_size += type_size.to_bytes() as u32;
+                        vreg
                     });
-                }
+                    assert!(self.size_map.get(&dest).unwrap().to_bytes() == type_size.to_bytes());
+                    println!("=> vreg: {}", dest);
+                    println!("=> size: {}", type_size.to_bytes());
 
-                SourceVal::VReg(ptr_vreg)
+                    let offset = *self.stack.get(&dest).unwrap();
+                    println!("=> stack offset: {}", offset);
+
+                    self.flatten_construct(typeid, fields, ConstructPlacement::Stack { offset });
+
+                    SourceVal::VReg(dest)
+                } else {
+                    println!("=> heap: true");
+                    let size_vreg = self.get_vreg(VregSize::Doubleword);
+                    let ptr_vreg = dest.unwrap_or_else(|| self.get_vreg(VregSize::Doubleword));
+
+                    self.block_ops.push(Op::Assign {
+                        src: SourceVal::Immediate(type_size.to_bytes()),
+                        dest: size_vreg,
+                    });
+                    self.block_ops.push(Op::Call {
+                        function: ALLOC_FN.to_owned(),
+                        args: vec![size_vreg],
+                        dest: Some(ptr_vreg),
+                    });
+
+                    self.flatten_construct(
+                        typeid,
+                        fields,
+                        ConstructPlacement::Heap {
+                            base: ptr_vreg,
+                            offset: 0,
+                        },
+                    );
+
+                    SourceVal::VReg(ptr_vreg)
+                }
             }
 
             ExprInner::SizeOf(typ) => {
@@ -806,9 +844,142 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
         }
     }
 
+    fn flatten_construct(
+        &mut self,
+        typeid: TypeId,
+        fields: Vec<(&'s str, Expression<'s, TypeId>)>,
+        placement: ConstructPlacement,
+    ) {
+        for (name, expr) in fields {
+            let field_offset = self.analyzer.types.offset_of_member(typeid, name).unwrap() as u32;
+            println!(
+                "=> member (+{}): {}  {}",
+                field_offset,
+                name,
+                self.analyzer.types.display(expr.typeid.unwrap())
+            );
+
+            match expr.inner {
+                ExprInner::Construct {
+                    typeid,
+                    fields,
+                    heap,
+                } => {
+                    match (heap, placement) {
+                        (false, ConstructPlacement::Stack { offset }) => self.flatten_construct(
+                            typeid,
+                            fields,
+                            ConstructPlacement::Stack {
+                                offset: offset + field_offset,
+                            },
+                        ),
+                        (true, ConstructPlacement::Stack { offset }) => {
+                            let size_vreg = self.get_vreg(VregSize::Doubleword);
+                            let ptr_vreg = self.get_vreg(VregSize::Doubleword);
+
+                            self.block_ops.push(Op::Assign {
+                                src: SourceVal::Immediate(self.analyzer.types.size_of(typeid)),
+                                dest: size_vreg,
+                            });
+                            self.block_ops.push(Op::Call {
+                                function: ALLOC_FN.to_owned(),
+                                args: vec![size_vreg],
+                                dest: Some(ptr_vreg),
+                            });
+                            self.block_ops.push(Op::Store {
+                                src: ptr_vreg,
+                                stack_offset: field_offset + offset,
+                            });
+
+                            self.flatten_construct(
+                                typeid,
+                                fields,
+                                ConstructPlacement::Heap {
+                                    base: ptr_vreg,
+                                    offset: 0,
+                                },
+                            );
+                        }
+                        _ => todo!(),
+                    }
+
+                    // if heap {
+                    //     let size = self.analyzer.types.size_of(typeid);
+                    //
+                    //     let size_vreg = self.get_vreg(VregSize::Doubleword);
+                    //     let ptr_vreg = self.get_vreg(VregSize::Doubleword);
+                    //
+                    //     self.block_ops.push(Op::Assign {
+                    //         src: SourceVal::Immediate(size),
+                    //         dest: size_vreg,
+                    //     });
+                    //     self.block_ops.push(Op::Call {
+                    //         function: ALLOC_FN.to_owned(),
+                    //         args: vec![size_vreg],
+                    //         dest: Some(ptr_vreg),
+                    //     });
+                    //
+                    //     self.flatten_construct(
+                    //         typeid,
+                    //         fields,
+                    //         ConstructPlacement::Heap {
+                    //             base: ptr_vreg,
+                    //             offset: 0,
+                    //         },
+                    //     );
+                    // } else {
+                    //     todo!()
+                    // }
+
+                    // match placement {
+                    //     ConstructPlacement::Heap { base, offset } => {
+                    //         self.block_ops.push(Op::StorePointer {
+                    //             src: todo!(),
+                    //             ptr: todo!(),
+                    //             size: todo!(),
+                    //             offset: todo!(),
+                    //         });
+                    //     }
+                    //     ConstructPlacement::Stack { offset } => {
+                    //         todo!()
+                    //         // self.block_ops.push(Op::Store {
+                    //         //     src: SourceVal::VReg(ptr_vreg),
+                    //         //     stack_offset: offset + field_offset,
+                    //         // });
+                    //     }
+                    // }
+                }
+                _ => {
+                    let field_size = self.analyzer.types.size_of(expr.typeid.unwrap());
+                    assert!(field_size <= 8); // if bigger, copy all bytes
+
+                    let field_size = VregSize::from_bytes(field_size);
+
+                    let src = self.flatten_expr(expr, None);
+                    let src = self.src_to_vreg(src);
+
+                    match placement {
+                        ConstructPlacement::Heap { base, offset } => {
+                            self.block_ops.push(Op::StorePointer {
+                                src,
+                                ptr: base,
+                                size: field_size,
+                                offset: offset + field_offset,
+                            })
+                        }
+                        ConstructPlacement::Stack { offset } => self.block_ops.push(Op::Store {
+                            src,
+                            stack_offset: offset + field_offset,
+                        }),
+                    }
+                }
+            }
+        }
+    }
+
     fn load_var(&mut self, var: &str, dest: VirtualReg) {
         if let Some((offset, typeid)) = self.ir.static_mem.get(var).copied() {
-            let ptr = self.get_vreg(ValSize::Doubleword);
+            let ptr = self.get_vreg(VregSize::Doubleword);
             self.block_ops.push(Op::Assign {
                 src: SourceVal::StaticMem(offset),
                 dest: ptr,
@@ -820,7 +991,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             }
             self.block_ops.push(Op::LoadPointer {
                 ptr,
-                size: ValSize::from_bytes(size).unwrap(),
+                size: VregSize::from_bytes(size),
                 dest,
             });
 
@@ -842,7 +1013,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
         }
     }
 
-    fn get_or_insert_stack_var(&mut self, var: &'s str, size: ValSize) -> (VirtualReg, u32) {
+    fn get_or_insert_stack_var(&mut self, var: &'s str, size: VregSize) -> (VirtualReg, u32) {
         if self.ir.static_mem.get(var).is_some() {
             panic!()
         }
@@ -855,8 +1026,9 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
 
         let offset = self.stack.get(&vreg).copied().unwrap_or_else(|| {
             self.stack.insert(vreg, self.stack_size);
-            self.stack_size += 8;
-            self.stack_size - 8
+            let offset = self.stack_size;
+            self.stack_size += size.to_bytes().max(8) as u32;
+            offset
         });
 
         (vreg, offset)
@@ -874,7 +1046,22 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             .unwrap_or_else(|| panic!("variable {} is not on the stack", var))
     }
 
-    fn get_vreg(&mut self, size: ValSize) -> VirtualReg {
+    fn stack_offset_of_expr(&self, expr: Expression<'s, TypeId>) -> u32 {
+        match expr.inner {
+            ExprInner::Ident(var) => self.get_stack_offset(var),
+            ExprInner::MemberAccess(expr, member, typeid) => {
+                self.stack_offset_of_expr(*expr)
+                    + self
+                        .analyzer
+                        .types
+                        .offset_of_member(typeid.unwrap(), member)
+                        .unwrap() as u32
+            }
+            _ => panic!("cannot get stack offset of expression"),
+        }
+    }
+
+    fn get_vreg(&mut self, size: VregSize) -> VirtualReg {
         let vreg = VirtualReg(self.vreg_counter);
         self.vreg_counter += 1;
         self.block_decls.push(vreg);
@@ -885,7 +1072,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
     fn src_to_vreg(&mut self, src: SourceVal) -> VirtualReg {
         match src {
             SourceVal::Immediate(_) | SourceVal::String(_) | SourceVal::StaticMem(_) => {
-                let dest = self.get_vreg(ValSize::Doubleword);
+                let dest = self.get_vreg(VregSize::Doubleword);
                 self.block_ops.push(Op::Assign { src, dest });
                 dest
             }
@@ -894,279 +1081,8 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
     }
 }
 
-// struct _BlockBuilder<'ir> {
-//     ir: &'ir mut IR,
-//     vregs: HashMap<String, VirtualReg>,
-//     vreg_counter: u32,
-//     labels: HashMap<OpIndex, Vec<Label>>,
-//     label_counter: u32,
-//     ops: Vec<Op>,
-// }
-//
-// impl<'ir> _BlockBuilder<'ir> {
-//     pub fn new(ir: &'ir mut IR) -> Self {
-//         Self {
-//             vregs: HashMap::new(),
-//             vreg_counter: 0,
-//             labels: HashMap::new(),
-//             label_counter: 0,
-//             ops: Vec::new(),
-//             ir,
-//         }
-//     }
-//
-//     pub fn build(mut self, block: Vec<Statement>) -> BasicBlock {
-//         self.consume_block(block);
-//         BasicBlock {
-//             ops: self.ops,
-//             labels: self.labels,
-//         }
-//     }
-//
-//     fn consume_block(&mut self, block: Vec<Statement>) {
-//         self.ops.reserve(block.len());
-//
-//         for stmt in block {
-//             match stmt {
-//                 Statement::Declare { var, expr, .. } => {
-//                     assert!(!self.vregs.contains_key(&var), "variable declared twice");
-//
-//                     let dest = self.get_or_insert_vreg(var);
-//                     let src = self.unroll_expr(expr, Some(dest));
-//
-//                     if src != SourceVal::VReg(dest) {
-//                         self.ops.push(Op::Assign { src, dest });
-//                     }
-//                 }
-//                 Statement::Assign { var, expr, .. } => {
-//                     let dest = self.get_or_insert_vreg(var.symbol());
-//                     let src = self.unroll_expr(expr, Some(dest));
-//
-//                     match var {
-//                         Assignable::Var(_) => {
-//                             if src.reg() != Some(dest) {
-//                                 self.ops.push(Op::Assign { src, dest })
-//                             }
-//                         }
-//                         Assignable::Ptr(_) => {
-//                             let src = self.src_to_vreg(src);
-//                             self.ops.push(Op::StorePointer { src, ptr: dest });
-//                         }
-//                     }
-//                 }
-//                 Statement::Return(expr) => {
-//                     let value = self.unroll_expr(expr, None);
-//                     self.ops.push(Op::Return { value });
-//                 }
-//
-//                 Statement::If { guard, body } => {
-//                     let cond = self.unroll_expr(guard, None);
-//                     let cond = self.src_to_vreg(cond);
-//                     let label = self.reserve_label();
-//                     self.ops.push(Op::BranchIfNot { cond, label });
-//
-//                     let outer_vregs = self.vregs.clone();
-//                     let outer_vreg_counter = self.vreg_counter;
-//
-//                     self.consume_block(body);
-//
-//                     for (name, inner) in self.vregs.iter() {
-//                         if let Some(outer) = outer_vregs.get(name)
-//                             && inner != outer
-//                         {
-//                             self.ops.push(Op::Assign {
-//                                 src: SourceVal::VReg(*inner),
-//                                 dest: *outer,
-//                             });
-//                         }
-//                     }
-//
-//                     self.set_label_here(label);
-//
-//                     self.vregs = outer_vregs;
-//                     self.vreg_counter = outer_vreg_counter;
-//                 }
-//
-//                 Statement::WhileLoop { guard, body } => {
-//                     let cond_label = self.reserve_label();
-//
-//                     let outer_vregs = self.vregs.clone();
-//                     let outer_vreg_counter = self.vreg_counter;
-//
-//                     self.ops.push(Op::Branch { label: cond_label });
-//
-//                     let body_label = self.insert_label();
-//                     self.consume_block(body);
-//
-//                     self.set_label_here(cond_label);
-//                     let cond = self.unroll_expr(guard, None);
-//                     let cond = self.src_to_vreg(cond);
-//                     self.ops.push(Op::BranchIf {
-//                         cond,
-//                         label: body_label,
-//                     });
-//
-//                     for (name, inner) in self.vregs.iter() {
-//                         if let Some(outer) = outer_vregs.get(name)
-//                             && inner != outer
-//                         {
-//                             self.ops.push(Op::Assign {
-//                                 src: SourceVal::VReg(*inner),
-//                                 dest: *outer,
-//                             });
-//                         }
-//                     }
-//
-//                     self.vregs = outer_vregs;
-//                     self.vreg_counter = outer_vreg_counter;
-//                 }
-//
-//                 Statement::Expr(expr) => {
-//                     self.unroll_expr(expr, None);
-//                 }
-//             }
-//         }
-//     }
-//
-//     fn unroll_expr(&mut self, expr: Expression, dest: Option<VirtualReg>) -> SourceVal {
-//         match expr.inner {
-//             ExprInner::Const(num) => SourceVal::Immediate(num),
-//             ExprInner::Character(c) => SourceVal::Immediate(c as i64),
-//             ExprInner::String(string) => {
-//                 let str_id = self.ir.alloc_str_literal(string);
-//                 SourceVal::String(str_id)
-//             }
-//             ExprInner::Bool(b) => SourceVal::Immediate(b as i64),
-//
-//             ExprInner::Variable(var) => SourceVal::VReg(self.expect_vreg(&var)),
-//             ExprInner::Pointer(var) => {
-//                 let val = self.expect_vreg(&var);
-//                 let dest = dest.unwrap_or_else(|| self.get_vreg());
-//
-//                 self.ops.push(Op::AddressOf { val, dest });
-//                 SourceVal::VReg(dest)
-//             }
-//             ExprInner::Deref(var, typ) => {
-//                 let ptr = self.expect_vreg(&var);
-//                 let dest = dest.unwrap_or_else(|| self.get_vreg());
-//
-//                 self.ops.push(Op::LoadPointer {
-//                     ptr,
-//                     size: typ.unwrap().size(),
-//                     dest,
-//                 });
-//                 SourceVal::VReg(dest)
-//             }
-//
-//             ExprInner::Arithmetic(expr1, expr2, op, _sign) => {
-//                 // TODO: sign
-//                 let a = self.unroll_expr(*expr1, None);
-//                 let b = self.unroll_expr(*expr2, None);
-//
-//                 let a = self.src_to_vreg(a);
-//                 let b = self.src_to_vreg(b);
-//
-//                 let dest = dest.unwrap_or_else(|| self.get_vreg());
-//
-//                 match op {
-//                     ArithmeticOp::Add => self.ops.push(Op::Add { a, b, dest }),
-//                     ArithmeticOp::Sub => self.ops.push(Op::Subtract { a, b, dest }),
-//                     ArithmeticOp::Mult => self.ops.push(Op::Multiply { a, b, dest }),
-//                     ArithmeticOp::Div => self.ops.push(Op::Divide { a, b, dest }),
-//                 }
-//
-//                 SourceVal::VReg(dest)
-//             }
-//             ExprInner::Comparison(expr1, expr2, op, sign) => {
-//                 let expr1 = self.unroll_expr(*expr1, None);
-//                 let expr2 = self.unroll_expr(*expr2, None);
-//
-//                 let expr1 = self.src_to_vreg(expr1);
-//                 let expr2 = self.src_to_vreg(expr2);
-//
-//                 let dest = dest.unwrap_or_else(|| self.get_vreg());
-//
-//                 self.ops.push(Op::Compare {
-//                     a: expr1,
-//                     b: expr2,
-//                     cond: Condition::from_ast_op(op, matches!(sign, Some(Sign::Signed))),
-//                     dest,
-//                 });
-//
-//                 SourceVal::VReg(dest)
-//             }
-//
-//             ExprInner::FnCall(function, args) => {
-//                 let args = args
-//                     .into_iter()
-//                     .map(|e| {
-//                         let src = self.unroll_expr(e, None);
-//                         self.src_to_vreg(src)
-//                     })
-//                     .collect();
-//
-//                 let dest = dest.unwrap_or_else(|| self.get_vreg());
-//
-//                 println!("call to {} ret {:?}", function, dest);
-//                 self.ops.push(Op::Call {
-//                     function: function.clone(),
-//                     args,
-//                     dest: Some(dest),
-//                 });
-//
-//                 SourceVal::VReg(dest)
-//             }
-//
-//             ExprInner::Cast(expr, _typ) => self.unroll_expr(*expr, dest),
-//         }
-//     }
-//
-//     fn get_or_insert_vreg<S: Into<String> + AsRef<str>>(&mut self, var: S) -> VirtualReg {
-//         if let Some(&vreg) = self.vregs.get(var.as_ref()) {
-//             vreg
-//         } else {
-//             let vreg = self.get_vreg();
-//             self.vregs.insert(var.into(), vreg);
-//             vreg
-//         }
-//     }
-//
-//     fn expect_vreg(&self, var: &str) -> VirtualReg {
-//         *self
-//             .vregs
-//             .get(var)
-//             .unwrap_or_else(|| panic!("undefined variable '{}'", var))
-//     }
-//
-//     fn get_vreg(&mut self) -> VirtualReg {
-//         let vreg = VirtualReg(self.vreg_counter);
-//         self.vreg_counter += 1;
-//         vreg
-//     }
-//
-//     fn src_to_vreg(&mut self, src: SourceVal) -> VirtualReg {
-//         match src {
-//             SourceVal::Immediate(_) | SourceVal::String(_) => {
-//                 let dest = self.get_vreg();
-//                 self.ops.push(Op::Assign { src, dest });
-//                 dest
-//             }
-//             SourceVal::VReg(vreg) => vreg,
-//         }
-//     }
-//
-//     fn reserve_label(&mut self) -> Label {
-//         self.label_counter += 1;
-//         Label::Anon(self.label_counter - 1)
-//     }
-//
-//     fn set_label_here(&mut self, label: Label) {
-//         self.labels.entry(self.ops.len()).or_default().push(label);
-//     }
-//
-//     fn insert_label(&mut self) -> Label {
-//         let label = self.reserve_label();
-//         self.set_label_here(label);
-//         label
-//     }
-// }
+#[derive(Copy, Clone)]
+enum ConstructPlacement {
+    Heap { base: VirtualReg, offset: u32 },
+    Stack { offset: u32 },
+}

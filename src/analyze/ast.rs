@@ -5,7 +5,7 @@ use crate::{
         Span,
         semantics::types::{ParsedType, Primitive, Sign, TypeId},
     },
-    ir::ValSize,
+    ir::VregSize,
 };
 
 pub mod parse;
@@ -125,11 +125,11 @@ pub enum IfElse<'s, T> {
 #[derive(Debug, Clone)]
 pub enum Assignable<'s, T> {
     Var(&'s str),
-    Ptr(&'s str, Option<ValSize>),
+    Ptr(&'s str, Option<VregSize>),
     Index {
         data: Box<Expression<'s, T>>,
         index: Box<Expression<'s, T>>,
-        val_size: Option<ValSize>,
+        val_size: Option<VregSize>,
     },
     MemberAccess(Box<Expression<'s, T>>, &'s str),
 }
@@ -148,7 +148,7 @@ impl<'s, T> Assignable<'s, T> {
 #[derive(Clone)]
 pub struct Expression<'s, T> {
     pub inner: ExprInner<'s, T>,
-    pub typ: Option<T>,
+    pub typeid: Option<T>,
     pub span: Span,
 }
 
@@ -184,7 +184,7 @@ pub enum ExprInner<'s, T> {
     Index {
         data: Box<Expression<'s, T>>,
         index: Box<Expression<'s, T>>,
-        val_size: Option<ValSize>,
+        val_size: Option<VregSize>,
     },
 
     MemberAccess(Box<Expression<'s, T>>, &'s str, Option<TypeId>),
@@ -192,8 +192,9 @@ pub enum ExprInner<'s, T> {
     FnCall(FnPtr<'s, T>, Vec<Expression<'s, T>>),
 
     Construct {
-        typ: T,
+        typeid: T,
         fields: Vec<(&'s str, Expression<'s, T>)>,
+        heap: bool,
     },
 
     SizeOf(T),

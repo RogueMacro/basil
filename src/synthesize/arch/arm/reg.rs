@@ -10,7 +10,7 @@ use strum::EnumIter;
 use ux::u12;
 
 use crate::{
-    ir::{BasicBlock, Label, Op, Operation, Terminator, ValSize, VirtualReg, lifetime::Lifetime},
+    ir::{BasicBlock, Label, Op, Operation, Terminator, VirtualReg, VregSize, lifetime::Lifetime},
     synthesize::arch::arm::{
         ArmAssembler, InstMarker,
         instr::{self, BranchOffset, EitherOffset, EitherReg, Input, Inst},
@@ -180,21 +180,22 @@ pub enum Location {
 }
 
 #[derive(Debug)]
-struct Stack<'s> {
+struct Stack {
     size: u16,
-    size_map: &'s HashMap<VirtualReg, ValSize>,
     map: HashMap<VirtualReg, u12>,
     free_slots: Vec<u12>,
     tmp_offset: u12,
 }
 
-impl<'s> Stack<'s> {
+impl Stack {
     /// `initial_size` is in bytes, but the stack itself is tracked in 8-byte slots.
-    pub fn new(initial_size: u16, size_map: &'s HashMap<VirtualReg, ValSize>) -> Self {
+    pub fn new(initial_size: u16, stack: HashMap<VirtualReg, u32>) -> Self {
         Self {
             size: initial_size.div_ceil(8),
-            size_map,
-            map: HashMap::new(),
+            map: stack
+                .into_iter()
+                .map(|(k, v)| (k, u12::new(v as u16)))
+                .collect(),
             free_slots: Vec::new(),
             tmp_offset: u12::new(0),
         }
@@ -235,7 +236,7 @@ impl<'s> Stack<'s> {
 }
 
 /// Converts an 8-byte stack slot into a load/store immediate, which is scaled by `size`.
-fn slot_imm(slot: u12, size: ValSize) -> u12 {
+fn slot_imm(slot: u12, size: VregSize) -> u12 {
     u12::new(u16::from(slot) * 8 / size.to_bytes() as u16)
 }
 
@@ -247,12 +248,12 @@ const CALLER_SAVED_REGS: &[Register] = &[
 pub fn allocate(
     instructions: Vec<(Inst<VirtualReg>, InstMarker)>,
     stack_size: u16,
-    size_map: &HashMap<VirtualReg, ValSize>,
+    stack: HashMap<VirtualReg, u32>,
+    size_map: &HashMap<VirtualReg, VregSize>,
 ) -> (Vec<(Inst<Register>, InstMarker)>, u16) {
     let mut final_insts = Vec::with_capacity(instructions.len());
 
-    println!("initial size: {}", stack_size);
-    let mut stack = Stack::new(stack_size, size_map);
+    let mut stack = Stack::new(stack_size, stack);
 
     let mut regs_free: BTreeSet<Register> = BTreeSet::from_iter(CALLER_SAVED_REGS.iter().copied());
     let mut regs_in_use: BTreeSet<Register> = BTreeSet::new();
@@ -300,7 +301,7 @@ pub fn allocate(
 
                     final_insts.push((
                         Inst::Store {
-                            source: *reg,
+                            src: *reg,
                             base: EitherReg::Phys(SP),
                             offset: EitherOffset::Imm(offset),
                             size,

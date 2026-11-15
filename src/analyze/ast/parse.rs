@@ -198,8 +198,16 @@ impl<'e, 's> Parser<'e, 's> {
         self.expect_token(Token::LeftCurlyBracket, "expected opening curly bracket")?;
 
         let mut fields = Vec::new();
-
+        let mut first = true;
         while !matches!(self.tokens.current(), Some((Token::RightCurlyBracket, _))) {
+            if !first {
+                self.expect_token(Token::Comma, "expected comma")?;
+            }
+
+            if matches!(self.tokens.current(), Some((Token::RightCurlyBracket, _))) {
+                break;
+            }
+
             let (token, range) = self.expect_take_current()?;
             let Token::Ident(field_name) = token else {
                 let span = self.span(range);
@@ -214,14 +222,10 @@ impl<'e, 's> Parser<'e, 's> {
             self.expect_token(Token::Colon, "expected colon")?;
 
             let field_type = self.parse_type()?;
-
             let field_span = self.span(range.start..self.tokens.last_token_end());
 
-            if matches!(self.tokens.current(), Some((Token::Comma, _))) {
-                self.tokens.move_one();
-            }
-
             fields.push((field_name, field_type, field_span));
+            first = false;
         }
 
         self.expect_token(Token::RightCurlyBracket, "expected closing curly bracket")?;
@@ -423,7 +427,7 @@ impl<'e, 's> Parser<'e, 's> {
             self.tokens.take_current();
             self.parse_keyword(keyword, range.clone())
         } else {
-            let expr = self.parse_expr()?;
+            let expr = self.parse_expr(false)?;
             let var_span = self.span(range.start..self.tokens.last_token_end());
 
             match self.tokens.take_current() {
@@ -466,7 +470,7 @@ impl<'e, 's> Parser<'e, 's> {
                         }
                     };
 
-                    let mut rvalue = self.parse_expr()?;
+                    let mut rvalue = self.parse_expr(true)?;
                     self.expect_semicolon()?;
 
                     if let Some(op) = op {
@@ -488,7 +492,7 @@ impl<'e, 's> Parser<'e, 's> {
                                 arith_op,
                                 None,
                             ),
-                            typ: None,
+                            typeid: None,
                             span,
                         };
                     }
@@ -509,7 +513,7 @@ impl<'e, 's> Parser<'e, 's> {
                             .finish());
                     };
 
-                    let rhs = self.parse_expr()?;
+                    let rhs = self.parse_expr(true)?;
                     self.expect_semicolon()?;
 
                     Ok(Statement::Declare {
@@ -533,7 +537,7 @@ impl<'e, 's> Parser<'e, 's> {
 
                     self.expect_token(Token::Assign(None), "expected '='")?;
 
-                    let rhs = self.parse_expr()?;
+                    let rhs = self.parse_expr(true)?;
                     self.expect_semicolon()?;
 
                     Ok(Statement::Declare {
@@ -569,14 +573,14 @@ impl<'e, 's> Parser<'e, 's> {
     }
 
     fn parse_return(&mut self) -> Result<Statement<'s, (ParsedType<'s>, Span)>, Error> {
-        let expr = self.parse_expr()?;
+        let expr = self.parse_expr(true)?;
         self.expect_semicolon()?;
 
         Ok(Statement::Return(expr))
     }
 
     fn parse_if(&mut self) -> Result<IfElse<'s, (ParsedType<'s>, Span)>, Error> {
-        let guard = self.parse_expr();
+        let guard = self.parse_expr(false);
         if guard.is_err() {
             while !matches!(self.tokens.current(), Some((Token::LeftCurlyBracket, _))) {
                 self.tokens.move_one();
@@ -611,7 +615,7 @@ impl<'e, 's> Parser<'e, 's> {
     }
 
     fn parse_while_loop(&mut self) -> Result<Statement<'s, (ParsedType<'s>, Span)>, Error> {
-        let guard = self.parse_expr()?;
+        let guard = self.parse_expr(false)?;
         let body = self.parse_block()?;
 
         Ok(Statement::WhileLoop { guard, body })
@@ -634,7 +638,7 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Ok(Expression {
                     inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
-                    typ: None,
+                    typeid: None,
                     span,
                 })
             }
@@ -654,7 +658,7 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Ok(Expression {
                     inner: ExprInner::Arithmetic(Box::new(lhs), Box::new(rhs), op, None),
-                    typ: None,
+                    typeid: None,
                     span,
                 })
             }
@@ -667,12 +671,12 @@ impl<'e, 's> Parser<'e, 's> {
         let span = self.span(range.clone());
         let expr = match token {
             Token::Number(num, explicit_type) => Expression {
-                inner: ExprInner::Const(num, explicit_type.map(|typ| Primitive::from(typ))),
-                typ: None,
+                inner: ExprInner::Const(num, explicit_type),
+                typeid: None,
                 span,
             },
             Token::LeftParenthesis => {
-                let expr = self.parse_expr()?;
+                let expr = self.parse_expr(false)?;
                 self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
                 expr
             }
@@ -689,8 +693,11 @@ impl<'e, 's> Parser<'e, 's> {
         Ok(expr)
     }
 
-    fn parse_expr(&mut self) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
-        let mut lhs = self.parse_single_expr()?;
+    fn parse_expr(
+        &mut self,
+        allow_construct: bool,
+    ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
+        let mut lhs = self.parse_single_expr(allow_construct)?;
 
         if let Some((Token::Operator(op), _)) = self.tokens.current() {
             let mut op = *op;
@@ -724,20 +731,20 @@ impl<'e, 's> Parser<'e, 's> {
             let rhs = if let Some((right_bind_power, next_op)) = right_side
                 && right_bind_power < left_bind_power
             {
-                let rhs = self.parse_single_expr()?;
+                let rhs = self.parse_single_expr(allow_construct)?;
                 let span = self.span(lhs.span.1.start..rhs.span.1.end);
                 lhs = Expression {
                     inner: self.bind_expr(op, lhs, rhs),
-                    typ: None,
+                    typeid: None,
                     span,
                 };
 
                 self.tokens.move_one();
                 op = next_op;
 
-                self.parse_expr()?
+                self.parse_expr(allow_construct)?
             } else {
-                self.parse_expr()?
+                self.parse_expr(allow_construct)?
             };
 
             let span = self.span((lhs.span.1.start)..(rhs.span.1.end));
@@ -745,7 +752,7 @@ impl<'e, 's> Parser<'e, 's> {
 
             return Ok(Expression {
                 inner,
-                typ: None,
+                typeid: None,
                 span,
             });
         }
@@ -809,14 +816,29 @@ impl<'e, 's> Parser<'e, 's> {
         }
     }
 
-    fn parse_single_expr(&mut self) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
+    fn parse_single_expr(
+        &mut self,
+        allow_construct: bool,
+    ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
+        if allow_construct
+            && matches!(
+                (self.tokens.current(), self.tokens.peek()),
+                (
+                    Some((Token::Ident(_), _)),
+                    Some((Token::LeftCurlyBracket, _))
+                )
+            )
+        {
+            return self.parse_construct(false);
+        }
+
         let token = self.expect_take_current()?;
 
         // BUG: the largest possible 64-bit unsigned integer doesnt work.
         let expr = match token {
             (Token::Number(num, explicit_type), range) => Expression {
                 inner: ExprInner::Const(num, explicit_type),
-                typ: None,
+                typeid: None,
                 span: self.span(range),
             },
             (Token::Reference, ref_range) => {
@@ -832,7 +854,7 @@ impl<'e, 's> Parser<'e, 's> {
                 };
 
                 Expression {
-                    typ: None,
+                    typeid: None,
                     inner: ExprInner::Pointer(var),
                     span: self.span(ref_range.start..var_range.end),
                 }
@@ -849,16 +871,16 @@ impl<'e, 's> Parser<'e, 's> {
                 //         .finish());
                 // };
 
-                let expr = self.parse_single_expr()?;
+                let expr = self.parse_single_expr(allow_construct)?;
 
                 Expression {
                     inner: ExprInner::Deref(Box::new(expr), None),
-                    typ: None,
+                    typeid: None,
                     span: self.span(deref_range.start..self.tokens.last_token_end()),
                 }
             }
             (Token::Operator(Operator::Minus), range) => {
-                let expr = self.parse_single_expr()?;
+                let expr = self.parse_single_expr(allow_construct)?;
                 match expr.inner {
                     ExprInner::Const(number, explicit_type) => {
                         let span = self.span(range);
@@ -882,44 +904,44 @@ impl<'e, 's> Parser<'e, 's> {
 
                         Expression {
                             inner: ExprInner::Const(-(number as i64) as u64, Some(Primitive::I64)),
-                            typ: None,
+                            typeid: None,
                             span,
                         }
                     }
                     _ => Expression {
                         inner: ExprInner::Negate(Box::new(expr)),
-                        typ: None,
+                        typeid: None,
                         span: self.span(range),
                     },
                 }
             }
             (Token::Operator(Operator::Not), range) => {
-                let expr = self.parse_single_expr()?;
+                let expr = self.parse_single_expr(allow_construct)?;
 
                 Expression {
                     inner: ExprInner::Not(Box::new(expr)),
-                    typ: None,
+                    typeid: None,
                     span: self.span(range),
                 }
             }
             (Token::Ident(_), range) => self.parse_ident_expr(range.start)?,
             (Token::Character(c), range) => Expression {
                 inner: ExprInner::Character(c),
-                typ: None,
+                typeid: None,
                 span: self.span(range),
             },
             (Token::String(string), range) => Expression {
                 inner: ExprInner::String(string),
-                typ: None,
+                typeid: None,
                 span: self.span(range),
             },
             (Token::Bool(b), range) => Expression {
                 inner: ExprInner::Bool(b),
-                typ: None,
+                typeid: None,
                 span: self.span(range),
             },
             (Token::LeftParenthesis, _) => {
-                let expr = self.parse_expr()?;
+                let expr = self.parse_expr(true)?;
                 self.expect_token(Token::RightParenthesis, "expected closing parenthesis")?;
                 expr
             }
@@ -930,11 +952,11 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Expression {
                     inner: ExprInner::SizeOf(typ),
-                    typ: None,
+                    typeid: None,
                     span: self.span(kw_range.start..self.tokens.last_token_end()),
                 }
             }
-            (Token::LeftBracket, _) => self.parse_construct()?,
+            (Token::LeftBracket, _) => self.parse_construct(true)?,
             (_, range) => {
                 return Err(self
                     .err_ctx
@@ -962,7 +984,7 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Expression {
                     inner: ExprInner::Cast(Box::new(expr), typ),
-                    typ: None,
+                    typeid: None,
                     span,
                 }
             }
@@ -986,14 +1008,14 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Expression {
                     inner: ExprInner::FnCall(FnPtr::Expr(Box::new(expr)), args),
-                    typ: None,
+                    typeid: None,
                     span,
                 }
             }
             Some((Token::LeftBracket, _)) => {
                 self.tokens.move_one();
 
-                let index = self.parse_expr()?;
+                let index = self.parse_expr(true)?;
 
                 self.expect_token(Token::RightBracket, "expected closing bracket")?;
 
@@ -1005,7 +1027,7 @@ impl<'e, 's> Parser<'e, 's> {
                         index: Box::new(index),
                         val_size: None,
                     },
-                    typ: None,
+                    typeid: None,
                     span,
                 }
             }
@@ -1025,7 +1047,7 @@ impl<'e, 's> Parser<'e, 's> {
 
                 Expression {
                     inner: ExprInner::MemberAccess(Box::new(expr), member, None),
-                    typ: None,
+                    typeid: None,
                     span,
                 }
             }
@@ -1037,19 +1059,31 @@ impl<'e, 's> Parser<'e, 's> {
         self.parse_single_expr_ext(combined)
     }
 
-    fn parse_construct(&mut self) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
-        let begin = self.tokens.last_token_end() - 1;
+    fn parse_construct(
+        &mut self,
+        heap: bool,
+    ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
+        let begin = if heap {
+            self.tokens.last_token_end() - 1
+        } else {
+            self.tokens.cur_token_start()
+        };
 
         let typ = self.parse_type()?;
+        if heap {
+            self.expect_token(Token::RightBracket, "expected closing bracket")?;
+        }
 
-        self.expect_token(Token::RightBracket, "expected closing bracket")?;
         self.expect_token(Token::LeftCurlyBracket, "expected opening brace")?;
-
         let mut fields = Vec::new();
         let mut first = true;
         while !matches!(self.tokens.current(), Some((Token::RightCurlyBracket, _))) {
             if !first {
                 self.expect_token(Token::Comma, "expected comma")?;
+            }
+
+            if matches!(self.tokens.current(), Some((Token::RightCurlyBracket, _))) {
+                break;
             }
 
             let (token, range) = self.expect_take_current()?;
@@ -1060,10 +1094,9 @@ impl<'e, 's> Parser<'e, 's> {
                     .unexpected_token(span, "expected field name")
                     .finish());
             };
-
             self.expect_token(Token::Colon, "expected colon")?;
 
-            let init_expr = self.parse_expr()?;
+            let init_expr = self.parse_expr(true)?;
             fields.push((field, init_expr));
 
             first = false;
@@ -1072,8 +1105,12 @@ impl<'e, 's> Parser<'e, 's> {
         self.expect_token(Token::RightCurlyBracket, "expected closing brace")?;
 
         Ok(Expression {
-            inner: ExprInner::Construct { typ, fields },
-            typ: None,
+            inner: ExprInner::Construct {
+                typeid: typ,
+                fields,
+                heap,
+            },
+            typeid: None,
             span: self.span(begin..self.tokens.last_token_end()),
         })
     }
@@ -1111,7 +1148,7 @@ impl<'e, 's> Parser<'e, 's> {
         // } else {
         Ok(Expression {
             inner: ExprInner::Ident(ident),
-            typ: None,
+            typeid: None,
             span: self.span((ident_start)..(self.tokens.last_token_end())),
         })
         // }
@@ -1135,7 +1172,7 @@ impl<'e, 's> Parser<'e, 's> {
                 self.expect_matches(|t| matches!(t, Token::Comma), "expected comma")?;
             }
 
-            let expr = self.parse_expr()?;
+            let expr = self.parse_expr(true)?;
             args.push(expr);
 
             first = false;

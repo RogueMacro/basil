@@ -60,7 +60,7 @@ pub enum Item<'s> {
         args: Vec<VirtualReg>,
         stack: HashMap<VirtualReg, u32>,
         stack_size: u32,
-        size_map: HashMap<VirtualReg, ValSize>,
+        size_map: HashMap<VirtualReg, VregSize>,
         body: Vec<BasicBlock>,
     },
 }
@@ -111,32 +111,33 @@ impl fmt::Display for Label {
 
 pub type Op = Operation;
 
-#[repr(u32)]
 #[derive(Debug, Clone, Copy, PartialEq)]
-pub enum ValSize {
-    Byte = 0,
-    Halfword = 1,
-    Word = 2,
-    Doubleword = 3,
+pub enum VregSize {
+    Byte,
+    Halfword,
+    Word,
+    Doubleword,
+    Bytes(u64),
 }
 
-impl ValSize {
-    pub fn from_bytes(size: u64) -> Option<Self> {
+impl VregSize {
+    pub fn from_bytes(size: u64) -> Self {
         match size {
-            1 => Some(Self::Byte),
-            2 => Some(Self::Halfword),
-            4 => Some(Self::Word),
-            8 => Some(Self::Doubleword),
-            _ => None,
+            1 => Self::Byte,
+            2 => Self::Halfword,
+            4 => Self::Word,
+            8 => Self::Doubleword,
+            other => Self::Bytes(other),
         }
     }
 
     pub fn to_bytes(&self) -> u64 {
         match self {
-            ValSize::Byte => 1,
-            ValSize::Halfword => 2,
-            ValSize::Word => 4,
-            ValSize::Doubleword => 8,
+            VregSize::Byte => 1,
+            VregSize::Halfword => 2,
+            VregSize::Word => 4,
+            VregSize::Doubleword => 8,
+            VregSize::Bytes(bytes) => *bytes,
         }
     }
 }
@@ -173,7 +174,7 @@ pub enum Operation {
         dest: VirtualReg,
     },
     Store {
-        src: SourceVal,
+        src: VirtualReg,
         stack_offset: u32,
     },
     Load {
@@ -199,13 +200,13 @@ pub enum Operation {
     },
     LoadPointer {
         ptr: VirtualReg,
-        size: ValSize,
+        size: VregSize,
         dest: VirtualReg,
     },
     StorePointer {
         src: VirtualReg,
         ptr: VirtualReg,
-        size: ValSize,
+        size: VregSize,
         offset: u32,
     },
     Add {
@@ -280,7 +281,7 @@ impl Operation {
                 assigned = Some(*dest);
             }
             Operation::Store { src, stack_offset } => {
-                push(src.reg());
+                push(Some(*src));
             }
             Operation::Load { stack_offset, dest } => {
                 assigned = Some(*dest);
