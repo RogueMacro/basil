@@ -239,6 +239,12 @@ pub enum Operation {
         b: VirtualReg,
         dest: VirtualReg,
     },
+    BitShift {
+        src: VirtualReg,
+        shift: VirtualReg,
+        dest: VirtualReg,
+        to_the_left: bool,
+    },
     Negate {
         val: VirtualReg,
         dest: VirtualReg,
@@ -326,6 +332,17 @@ impl Operation {
             | Operation::And { a, b, dest } => {
                 push(Some(*a));
                 push(Some(*b));
+                assigned = Some(*dest);
+            }
+
+            Operation::BitShift {
+                src,
+                shift,
+                dest,
+                to_the_left: _,
+            } => {
+                push(Some(*src));
+                push(Some(*shift));
                 assigned = Some(*dest);
             }
 
@@ -578,6 +595,18 @@ impl<'s> fmt::Display for IR<'s> {
 
                         Operation::And { a, b, dest } => {
                             writeln!(f, "    {} = {} & {}", dest, a, b)?
+                        }
+                        Operation::BitShift {
+                            src,
+                            shift,
+                            dest,
+                            to_the_left,
+                        } => {
+                            if *to_the_left {
+                                writeln!(f, "    {} = {} << {}", dest, src, shift)?
+                            } else {
+                                writeln!(f, "    {} = {} >> {}", dest, src, shift)?
+                            }
                         }
 
                         Operation::Not { val, dest } => writeln!(f, "    {} = not {}", dest, val)?,

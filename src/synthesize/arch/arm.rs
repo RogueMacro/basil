@@ -372,6 +372,20 @@ impl ProcedureGen {
                     Op::And { a, b, dest } => {
                         proc.emit(Inst::And { a, b, dest });
                     }
+                    Op::BitShift {
+                        src,
+                        shift,
+                        dest,
+                        to_the_left,
+                    } => {
+                        let inst = if to_the_left {
+                            Inst::LSL { src, shift, dest }
+                        } else {
+                            Inst::LSR { src, shift, dest }
+                        };
+
+                        proc.emit(inst);
+                    }
 
                     Op::Not { val, dest } => proc.emit_many([
                         Inst::CmpImm {

@@ -759,6 +759,7 @@ fn display_inst(
     str_offsets: &HashMap<StrId, usize>,
 ) -> String {
     match inst {
+        _ => todo!(),
         Inst::Add { a, b, dest } => format!("add {}, {}, {}", dest, a, b),
         Inst::AddImm { a, imm, dest } => match imm {
             AddImmVal::Fixed(imm) => format!(

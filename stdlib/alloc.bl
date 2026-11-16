@@ -1,17 +1,53 @@
-memory arena: *i8;
-memory arena_size: u64;
-memory arena_offset: u64;
-memory arena_init: bool;
+memory ARENA: *Block;
+
+struct Block {
+    size: u64,
+    next: *Block,
+}
 
 fn alloc(bytes: u64) -> *i8 {
-  if !arena_init || bytes > arena_size - arena_offset {
-    arena = std::syscall::mmap(0 as *(), 4096, 3, 4098, -1, 0);
-    arena_size = 4096u64;
-    arena_offset = 0u64;
-    arena_init = true;
-  }
+    if ARENA as i64 == 0 {
+        ARENA = create_arena(bytes);
+    }
 
-  ptr := (arena as u64 + arena_offset) as *i8;
-  arena_offset += bytes;
-  return ptr;
+    block := ARENA;
+    while block != 0 as *Block {
+        if block.size == bytes {
+            std::panic("1");
+            return ((block as u64) + sizeof(Block)) as *i8;
+        } else if block.size > (bytes + sizeof(Block) + 8) {
+            split_off := ((block as u64) + block.size - bytes) as *Block;
+            split_off.size = bytes;
+            block.size -= sizeof(Block) + bytes;
+            std::fmt::cprint("test\n");
+            return ((split_off as u64) + sizeof(Block)) as *i8;
+        }
+
+        block = block.next;
+    }
+    std::fmt::cprint("memory block not found, creating new\n");
+    block = create_arena(bytes);
+    if block.size > (sizeof(Block) + bytes + 8) {
+        split_off2 := ((block as u64) + sizeof(Block) + bytes) as *Block;
+        split_off2.size = block.size - sizeof(Block) - bytes;
+        split_off2.next = ARENA;
+        ARENA = split_off2;
+
+        block.size -= sizeof(Block) + split_off2.size;
+    }
+
+    return (block as u64 + sizeof(Block)) as *i8;
+}
+
+fn create_arena(min_size: u64) -> *Block {
+    size := (min_size >> 12) << 12;
+    buffer := std::syscall::mmap(0 as *(), size as i64, 3, 4098, -1, 0);
+    if buffer as i64 == -1 {
+        std::panic("failed to allocate memory");
+    }
+
+    block := buffer as *Block;
+    block.size = size - sizeof(Block);
+
+    return block;
 }

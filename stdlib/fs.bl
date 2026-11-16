@@ -1,3 +1,5 @@
+use std::String;
+
 struct File {
     handle: i64
 }
@@ -21,9 +23,49 @@ impl File {
         return [File] { handle };
     }
 
-    fn close() {}
+    fn close(self: *File) {
+        if std::syscall::close(self.handle) < 0 {
+            std::panic("failed to close file");
+        }
+    }
 
-    fn read() {}
+    fn size(self: *File) -> u64 {
+        result := std::syscall::lseek(self.handle, 0, SeekFlag::End as i64);
+        if result < 0 {
+            std::panic("failed to get file size");
+        }
+
+        std::syscall::lseek(self.handle, 0, SeekFlag::Set as i64);
+
+        return result as u64;
+    }
+
+    fn read(self: *File) -> *String {
+        size := self.size();
+        std::fmt::cprint("9\n");
+        buffer := std::alloc::alloc(size) as *char;
+        std::fmt::cprint("10\n");
+        offset := 0;
+        
+        while offset as u64 < size {
+            buf_ptr := ((buffer as i64) + offset) as *char;
+            result := std::syscall::read(self.handle, buf_ptr, size as i64 - offset);
+            if result < 0 {
+                std::fmt::cprint("errno: ");
+                // std::itos(2);
+                // std::fmt::cprint("\n");
+                std::panic("failed to read file");
+            }
+
+            offset += result;
+        }
+
+        return [String] {
+            data: buffer,
+            length: size,
+            capacity: size
+        };
+    }
 }
 
 enum OpenFlags {
@@ -34,4 +76,10 @@ enum OpenFlags {
 
 enum FileError {
     NotFound = 2
+}
+
+enum SeekFlag {
+    Set,
+    Cur,
+    End
 }

@@ -96,7 +96,7 @@ impl<'s> IR<'s> {
             }
         }
 
-        println!("{}", ir);
+        // println!("{}", ir);
 
         ir
     }
@@ -664,6 +664,18 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                         a: lhs,
                         b: rhs,
                         dest,
+                    },
+                    BitwiseOp::ShiftLeft => Op::BitShift {
+                        src: lhs,
+                        shift: rhs,
+                        dest,
+                        to_the_left: true,
+                    },
+                    BitwiseOp::ShiftRight => Op::BitShift {
+                        src: lhs,
+                        shift: rhs,
+                        dest,
+                        to_the_left: false,
                     },
                 };
 

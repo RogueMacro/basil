@@ -241,6 +241,8 @@ pub enum LogicalOp {
 #[derive(Debug, Clone, Copy)]
 pub enum BitwiseOp {
     And,
+    ShiftLeft,
+    ShiftRight,
 }
 
 impl<'s, T: Debug> Debug for Expression<'s, T> {

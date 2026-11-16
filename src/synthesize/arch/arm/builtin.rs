@@ -20,9 +20,12 @@ const PREFIX: &str = "std::syscall::";
 pub fn assemble(asm: &mut ArmAssembler) {
     let builtins: &[(&str, BuiltinFn)] = &[
         ("exit", exit),
+        ("read", read),
         ("write", write),
         ("open", open),
+        ("close", close),
         ("mmap", mmap),
+        ("lseek", lseek),
     ];
 
     for (name, assemble_fn) in builtins {
@@ -46,11 +49,26 @@ fn load_arg(asm: &mut ArmAssembler, fp_offset: u32, dest: Reg) {
     });
 }
 
+pub fn exit(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    syscall(asm, SyscallType::Exit);
+}
+
+pub fn read(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    load_arg(asm, 1, Reg::X1);
+    load_arg(asm, 2, Reg::X2);
+    syscall(asm, SyscallType::Read);
+    set_topmost_bit_if_error(asm);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
 pub fn write(asm: &mut ArmAssembler) {
     load_arg(asm, 0, Reg::X0);
     load_arg(asm, 1, Reg::X1);
     load_arg(asm, 2, Reg::X2);
     syscall(asm, SyscallType::Write);
+    set_topmost_bit_if_error(asm);
     asm.emit(Inst::Ret { value: Reg::X0 });
 }
 
@@ -58,6 +76,49 @@ pub fn open(asm: &mut ArmAssembler) {
     load_arg(asm, 0, Reg::X0);
     load_arg(asm, 1, Reg::X1);
     syscall(asm, SyscallType::Open);
+    set_topmost_bit_if_error(asm);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+pub fn close(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    syscall(asm, SyscallType::Close);
+    set_topmost_bit_if_error(asm);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+pub fn mmap(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    load_arg(asm, 1, Reg::X1);
+    load_arg(asm, 2, Reg::X2);
+    load_arg(asm, 3, Reg::X3);
+    load_arg(asm, 4, Reg::X4);
+    load_arg(asm, 5, Reg::X5);
+    syscall(asm, SyscallType::MMap);
+    set_topmost_bit_if_error(asm);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+pub fn lseek(asm: &mut ArmAssembler) {
+    load_arg(asm, 0, Reg::X0);
+    load_arg(asm, 1, Reg::X1);
+    load_arg(asm, 2, Reg::X2);
+    syscall(asm, SyscallType::Lseek);
+    set_topmost_bit_if_error(asm);
+    asm.emit(Inst::Ret { value: Reg::X0 });
+}
+
+fn syscall(asm: &mut ArmAssembler, typ: SyscallType) {
+    asm.emit(Inst::Movz {
+        shift: ImmShift16::L0,
+        value: typ as u16,
+        dest: Reg::X16,
+    });
+
+    asm.emit(Inst::Syscall)
+}
+
+fn set_topmost_bit_if_error(asm: &mut ArmAssembler) {
     asm.emit_many([
         Inst::Mov {
             src: EitherReg::Phys(Reg::X0),
@@ -75,33 +136,6 @@ pub fn open(asm: &mut ArmAssembler) {
             dest: Reg::X0,
         },
     ]);
-    asm.emit(Inst::Ret { value: Reg::X0 });
-}
-
-pub fn mmap(asm: &mut ArmAssembler) {
-    load_arg(asm, 0, Reg::X0);
-    load_arg(asm, 1, Reg::X1);
-    load_arg(asm, 2, Reg::X2);
-    load_arg(asm, 3, Reg::X3);
-    load_arg(asm, 4, Reg::X4);
-    load_arg(asm, 5, Reg::X5);
-    syscall(asm, SyscallType::MMap);
-    asm.emit(Inst::Ret { value: Reg::X0 });
-}
-
-pub fn exit(asm: &mut ArmAssembler) {
-    load_arg(asm, 0, Reg::X0);
-    syscall(asm, SyscallType::Exit);
-}
-
-fn syscall(asm: &mut ArmAssembler, typ: SyscallType) {
-    asm.emit(Inst::Movz {
-        shift: ImmShift16::L0,
-        value: typ as u16,
-        dest: Reg::X16,
-    });
-
-    asm.emit(Inst::Syscall)
 }
 
 #[repr(u16)]
@@ -113,4 +147,5 @@ pub enum SyscallType {
     Close = 6,
     MUnmap = 73,
     MMap = 197,
+    Lseek = 199,
 }

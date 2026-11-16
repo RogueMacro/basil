@@ -163,7 +163,7 @@ impl Executable for AppleExecutable {
         };
 
         text_section_header.offset = text_data_offset as u32;
-        text_section_header.addr = text_segment.vmaddr;
+        text_section_header.addr = text_segment.vmaddr + text_section_header.offset as u64;
         cstring_section_header.offset =
             text_section_header.offset + text_section_header.size as u32;
         cstring_section_header.addr = text_section_header.addr + text_section_header.size;
@@ -302,7 +302,7 @@ impl Executable for AppleExecutable {
                     n_type: NListType::Sect,
                     n_sect: 1,
                     n_desc: 0,
-                    n_value: text_segment.vmaddr + offset,
+                    n_value: text_section_header.addr + offset,
                 };
 
                 str_table_size += label.len() + 1;

@@ -435,6 +435,20 @@ pub enum Inst<R> {
         offset: i7,
     },
 
+    /// Logical shift left
+    LSL {
+        src: R,
+        shift: R,
+        dest: R,
+    },
+
+    /// Logical shift right
+    LSR {
+        src: R,
+        shift: R,
+        dest: R,
+    },
+
     /// MOV instruction.
     ///
     /// Copies the value in the source register to the destination register.
@@ -605,11 +619,15 @@ impl Inst<VirtualReg> {
         match self {
             Inst::Add { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::AddImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
-            Inst::And { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::Sub { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::SubImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
             Inst::Mul { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::Div { a, b, dest, .. } => (Some(*a), Some(*b), None, Some(*dest)),
+
+            Inst::And { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
+            Inst::LSL { src, shift, dest } | Inst::LSR { src, shift, dest } => {
+                (Some(*src), Some(*shift), None, Some(*dest))
+            }
 
             Inst::Neg { val, dest } => (Some(*val), None, None, Some(*dest)),
 
@@ -678,11 +696,6 @@ impl Inst<VirtualReg> {
                 imm,
                 dest: regs.3.map(EitherReg::Phys).unwrap_or(dest),
             },
-            Inst::And { .. } => Inst::And {
-                a: regs.0.unwrap(),
-                b: regs.1.unwrap(),
-                dest: regs.3.unwrap(),
-            },
             Inst::Sub { .. } => Inst::Sub {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
@@ -703,6 +716,22 @@ impl Inst<VirtualReg> {
                 b: regs.1.unwrap(),
                 dest: regs.3.unwrap(),
                 signed,
+            },
+
+            Inst::And { .. } => Inst::And {
+                a: regs.0.unwrap(),
+                b: regs.1.unwrap(),
+                dest: regs.3.unwrap(),
+            },
+            Inst::LSL { .. } => Inst::LSL {
+                src: regs.0.unwrap(),
+                shift: regs.1.unwrap(),
+                dest: regs.3.unwrap(),
+            },
+            Inst::LSR { .. } => Inst::LSR {
+                src: regs.0.unwrap(),
+                shift: regs.1.unwrap(),
+                dest: regs.3.unwrap(),
             },
 
             Inst::Neg { .. } => Inst::Neg {
@@ -1051,6 +1080,28 @@ impl Inst<Register> {
                 let imm7 = imm7 as u32 & 0b1111111;
 
                 0b1010100011 << 22 | imm7 << 15 | (second << 10) | (base << 5) | first
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  0  0  1  1  0  1  0  1  1  0  Rm             0  0  1  0  0  0  Rn          Rd
+            Inst::LSL { src, shift, dest } => {
+                let src = src as u32;
+                let shift = shift as u32;
+                let dest = dest as u32;
+
+                (0b10011010110 << 21) | (shift << 16) | (0b001000 << 10) | (src << 6) | dest
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  0  0  1  1  0  1  0  1  1  0  Rm             0  0  1  0  0  1  Rn          Rd
+            Inst::LSR { src, shift, dest } => {
+                let src = src as u32;
+                let shift = shift as u32;
+                let dest = dest as u32;
+
+                (0b10011010110 << 21) | (shift << 16) | (0b001001 << 10) | (src << 6) | dest
             }
 
             // Encoding (register to register):

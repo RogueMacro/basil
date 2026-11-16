@@ -85,7 +85,9 @@ pub enum Operator {
     And,
     Or,
 
-    BitwiseAnd,
+    BitAnd,
+    BitShiftLeft,
+    BitShiftRight,
 }
 
 impl Operator {
@@ -99,6 +101,9 @@ impl Operator {
             ('&', Some('&')) => (Self::And, true),
             ('|', Some('|')) => (Self::Or, true),
 
+            ('<', Some('<')) => (Self::BitShiftLeft, true),
+            ('>', Some('>')) => (Self::BitShiftRight, true),
+
             ('<', _) => (Self::Less, false),
             ('>', _) => (Self::Greater, false),
 
@@ -108,7 +113,7 @@ impl Operator {
             ('/', _) => (Self::Slash, false),
             ('%', _) => (Self::Modulo, false),
 
-            ('&', _) => (Self::BitwiseAnd, false),
+            ('&', _) => (Self::BitAnd, false),
 
             ('!', _) => (Self::Not, false),
 
@@ -126,7 +131,7 @@ impl Operator {
             And => 1,
             Equal | NotEqual | Less | LessOrEqual | Greater | GreaterOrEqual => 2,
             Plus | Minus => 3,
-            BitwiseAnd => 4,
+            BitAnd | BitShiftLeft | BitShiftRight => 4,
             Star | Slash | Modulo => 5,
             Not => 6,
         }

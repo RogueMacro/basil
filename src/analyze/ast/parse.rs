@@ -764,69 +764,37 @@ impl<'e, 's> Parser<'e, 's> {
         &mut self,
         allow_construct: bool,
     ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
+        self.parse_expr_prec(allow_construct, 0)
+    }
+
+    fn parse_expr_prec(
+        &mut self,
+        allow_construct: bool,
+        min_prec: i32,
+    ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
         let mut lhs = self.parse_single_expr(allow_construct)?;
 
-        let op = match self.tokens.current() {
-            Some((Token::Operator(op), _)) => Some(*op),
-            Some((Token::Reference, _)) => Some(Operator::BitwiseAnd),
-             _ => None,
-        };
+        loop {
+            let op = match self.tokens.current() {
+                Some((Token::Operator(op), _)) => *op,
+                Some((Token::Reference, _)) => Operator::BitAnd,
+                _ => break,
+            };
 
-        if let Some(mut op) = op  {
+            let prec = op.precedence();
+            if prec < min_prec {
+                break;
+            }
             self.tokens.move_one();
 
-            // if op == Operator::Dot {
-            //     let (token, range) = self.expect_take_current()?;
-            //     let Token::Ident(member) = token else {
-            //         let span = self.span(range);
-            //         return Err(self
-            //             .err_ctx
-            //             .unexpected_token(span, "expected struct member")
-            //             .finish());
-            //     };
-            //
-            //     let span = self.span(lhs.span.1.start..range.end);
-            //     return Ok(Expression {
-            //         inner: ExprInner::MemberAccess(Box::new(lhs), member, None),
-            //         typ: None,
-            //         span,
-            //     });
-            // }
+            let rhs = self.parse_expr_prec(allow_construct, prec + 1)?;
 
-            let left_bind_power = op.precedence();
-
-            let right_side = match self.tokens.peek() {
-                Some((Token::Operator(next_op), _)) => Some((next_op.precedence(), *next_op)),
-                _ => None,
-            };
-
-            let rhs = if let Some((right_bind_power, next_op)) = right_side
-                && right_bind_power < left_bind_power
-            {
-                let rhs = self.parse_single_expr(allow_construct)?;
-                let span = self.span(lhs.span.1.start..rhs.span.1.end);
-                lhs = Expression {
-                    inner: self.bind_expr(op, lhs, rhs),
-                    typeid: None,
-                    span,
-                };
-
-                self.tokens.move_one();
-                op = next_op;
-
-                self.parse_expr(allow_construct)?
-            } else {
-                self.parse_expr(allow_construct)?
-            };
-
-            let span = self.span((lhs.span.1.start)..(rhs.span.1.end));
-            let inner = self.bind_expr(op, lhs, rhs);
-
-            return Ok(Expression {
-                inner,
+            let span = self.span(lhs.span.1.start..rhs.span.1.end);
+            lhs = Expression {
+                inner: self.bind_expr(op, lhs, rhs),
                 typeid: None,
                 span,
-            });
+            };
         }
 
         Ok(lhs)
@@ -878,8 +846,12 @@ impl<'e, 's> Parser<'e, 's> {
             Operator::And => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::And),
             Operator::Or => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::Or),
 
-            Operator::BitwiseAnd => {
-                ExprInner::Bitwise(Box::new(lhs), Box::new(rhs), BitwiseOp::And)
+            Operator::BitAnd => ExprInner::Bitwise(Box::new(lhs), Box::new(rhs), BitwiseOp::And),
+            Operator::BitShiftLeft => {
+                ExprInner::Bitwise(Box::new(lhs), Box::new(rhs), BitwiseOp::ShiftLeft)
+            }
+            Operator::BitShiftRight => {
+                ExprInner::Bitwise(Box::new(lhs), Box::new(rhs), BitwiseOp::ShiftRight)
             }
 
             Operator::Not => unreachable!(),

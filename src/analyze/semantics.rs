@@ -151,9 +151,9 @@ impl<'s> Analyzer<'s> {
         let mut used_functions: HashSet<String> = HashSet::new();
         used_functions.insert(self.main_fn.clone());
         used_functions.insert(crate::ir::codegen::ALLOC_FN.to_owned());
+        used_functions.insert("std::alloc::create_arena".to_owned());
 
         let mut queue: Vec<&str> = vec![&self.main_fn];
-
         while let Some(&func) = queue.first() {
             if let Some(iter) = self.function_calls.get(func) {
                 for callee in iter {
