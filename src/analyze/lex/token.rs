@@ -84,6 +84,8 @@ pub enum Operator {
 
     And,
     Or,
+
+    BitwiseAnd,
 }
 
 impl Operator {
@@ -106,6 +108,8 @@ impl Operator {
             ('/', _) => (Self::Slash, false),
             ('%', _) => (Self::Modulo, false),
 
+            ('&', _) => (Self::BitwiseAnd, false),
+
             ('!', _) => (Self::Not, false),
 
             _ => return None,
@@ -122,8 +126,9 @@ impl Operator {
             And => 1,
             Equal | NotEqual | Less | LessOrEqual | Greater | GreaterOrEqual => 2,
             Plus | Minus => 3,
-            Star | Slash | Modulo => 4,
-            Not => 5,
+            BitwiseAnd => 4,
+            Star | Slash | Modulo => 5,
+            Not => 6,
         }
     }
 
@@ -149,6 +154,7 @@ pub enum Keyword {
 
     Memory,
     Function,
+    Enum,
     Struct,
     Impl,
 
@@ -182,6 +188,7 @@ impl Keyword {
             "sizeof" => Keyword::SizeOf,
             "package" => Keyword::Package,
             "mod" => Keyword::Module,
+            "enum" => Keyword::Enum,
             _ => return None,
         };
 

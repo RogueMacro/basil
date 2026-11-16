@@ -312,6 +312,13 @@ pub enum Inst<R> {
         dest: R,
     },
 
+    /// Bitwise AND
+    And {
+        a: R,
+        b: R,
+        dest: R,
+    },
+
     /// B instruction.
     ///
     /// Branches unconditionally to a pc-relative offset.
@@ -371,6 +378,14 @@ pub enum Inst<R> {
     CmpImm {
         val: R,
         imm: i12,
+    },
+
+    /// Conditional select
+    Csel {
+        cond: Condition,
+        if_true: R,
+        if_false: R,
+        dest: R,
     },
 
     /// Conditional set (alias of CSINC).
@@ -590,6 +605,7 @@ impl Inst<VirtualReg> {
         match self {
             Inst::Add { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::AddImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
+            Inst::And { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::Sub { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
             Inst::SubImm { a, dest, .. } => (a.to_virtual(), None, None, dest.to_virtual()),
             Inst::Mul { a, b, dest } => (Some(*a), Some(*b), None, Some(*dest)),
@@ -599,6 +615,12 @@ impl Inst<VirtualReg> {
 
             Inst::Cmp { a, b } => (Some(*a), Some(*b), None, None),
             Inst::CmpImm { val, imm: _ } => (Some(*val), None, None, None),
+            Inst::Csel {
+                cond: _,
+                if_true,
+                if_false,
+                dest,
+            } => (Some(*if_true), Some(*if_false), None, Some(*dest)),
             Inst::Cset { inv_cond: _, dest } => (None, None, None, Some(*dest)),
 
             Inst::Adrp { dest, .. } => (None, None, None, Some(*dest)),
@@ -656,6 +678,11 @@ impl Inst<VirtualReg> {
                 imm,
                 dest: regs.3.map(EitherReg::Phys).unwrap_or(dest),
             },
+            Inst::And { .. } => Inst::And {
+                a: regs.0.unwrap(),
+                b: regs.1.unwrap(),
+                dest: regs.3.unwrap(),
+            },
             Inst::Sub { .. } => Inst::Sub {
                 a: regs.0.unwrap(),
                 b: regs.1.unwrap(),
@@ -690,6 +717,12 @@ impl Inst<VirtualReg> {
             Inst::CmpImm { imm, .. } => Inst::CmpImm {
                 val: regs.0.unwrap(),
                 imm,
+            },
+            Inst::Csel { cond, .. } => Inst::Csel {
+                cond,
+                if_true: regs.0.unwrap(),
+                if_false: regs.1.unwrap(),
+                dest: regs.3.unwrap(),
             },
             Inst::Cset { inv_cond, .. } => Inst::Cset {
                 inv_cond,
@@ -848,6 +881,17 @@ impl Inst<Register> {
 
             // Encoding:
             // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  0  0  0  1  0  1  0  shift 0  Rm             imm6              Rn             Rd
+            Inst::And { a, b, dest } => {
+                let a = a as u32;
+                let b = b as u32;
+                let dest = dest as u32;
+
+                (0b10001010000 << 21) | (b << 16) | (a << 5) | dest
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
             // 0  0  0  1  0  1  imm26
             Inst::Branch { offset } => {
                 let offset = offset.encode_bits(26);
@@ -912,6 +956,23 @@ impl Inst<Register> {
                 let imm = i32_to_u32(imm, 12);
 
                 (0b111100010_0 << 22) | (imm << 10) | (val << 5) | 0b11111
+            }
+
+            // Encoding:
+            // 31 30 29 28 27 26 25 24 23 22 21 20 19 18 17 16 15 14 13 12 11 10 9  8  7  6  5  4  3  2  1  0
+            // 1  0  0  1  1  0  1  0  1  0  0  Rm             cond        0  0  Rn             Rd
+            Inst::Csel {
+                cond,
+                if_true,
+                if_false,
+                dest,
+            } => {
+                let cond = cond_to_u32(cond);
+                let if_true = if_true as u32;
+                let if_false = if_false as u32;
+                let dest = dest as u32;
+
+                (0b10011010100 << 21) | (if_false << 16) | (cond << 12) | (if_true << 5) | dest
             }
 
             // Encoding:

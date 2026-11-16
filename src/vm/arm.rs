@@ -790,6 +790,9 @@ fn display_inst(
                 offset
             ),
         },
+        Inst::And { a, b, dest } => {
+            format!("and {}, {}, {}", dest, a, b)
+        }
         Inst::Adrp { page_addr, dest } => match page_addr {
             PageAddr::Fixed(i21) => todo!(),
             PageAddr::String(_) => {
@@ -816,6 +819,18 @@ fn display_inst(
         },
         Inst::Cmp { a, b } => format!("cmp {}, {}", a, b),
         Inst::CmpImm { val, imm } => format!("cmp {}, #{:#x}", val, imm),
+        Inst::Csel {
+            cond,
+            if_true,
+            if_false,
+            dest,
+        } => format!(
+            "csel {}, {}, {}, {}",
+            dest,
+            if_true,
+            if_false,
+            fmt_cond(*cond)
+        ),
         Inst::Cset { inv_cond, dest } => {
             format!("cset {}, {}", dest, fmt_cond(inv_cond.inverted()))
         }

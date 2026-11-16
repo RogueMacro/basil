@@ -124,6 +124,10 @@ pub enum TypeKind {
         qualifier: String,
         fields: Vec<(String, TypeId, u64, Span)>,
     },
+    Enum {
+        qualifier: String,
+        variants: Vec<(String, u64)>,
+    },
     Pointer(TypeId),
     Primitive(Primitive),
 }
@@ -149,6 +153,10 @@ impl TypeMap {
 
     pub fn get(&self, typeid: TypeId) -> &TypeInfo {
         self.map.get(&typeid).expect("unknown typeid")
+    }
+
+    pub fn try_get(&self, typeid: TypeId) -> Option<&TypeInfo> {
+        self.map.get(&typeid)
     }
 
     pub fn get_or_insert_with<F: FnOnce() -> TypeInfo>(
@@ -209,7 +217,7 @@ impl<'t> fmt::Display for NameDisplay<'t> {
         loop {
             let typeinfo = self.types.get(typeid);
             match &typeinfo.kind {
-                TypeKind::Struct { qualifier, .. } => {
+                TypeKind::Struct { qualifier, .. } | TypeKind::Enum { qualifier, .. } => {
                     f.write_str(qualifier)?;
                 }
                 TypeKind::Pointer(value_typeid) => {
@@ -335,7 +343,7 @@ impl<'s> std::fmt::Display for ParsedType<'s> {
         match self {
             ParsedType::Primitive(primitive) => write!(f, "{}", primitive),
             ParsedType::Pointer(typ) => write!(f, "*{}", typ),
-            ParsedType::Struct(typ) => write!(f, "{}", typ),
+            ParsedType::Struct(name) => write!(f, "{}", name),
         }
     }
 }
@@ -396,6 +404,23 @@ impl<'s, 'e> Resolver<'e> {
                 Item::Struct { name, .. } => {
                     let typeid = TypeId::from_parsed(&ParsedType::Struct(name));
                     self.known_typeids.insert(typeid);
+                }
+                Item::Enum { name, variants } => {
+                    let typeid = TypeId::from_parsed(&ParsedType::Struct(name));
+                    self.known_typeids.insert(typeid);
+                    self.types.map.insert(
+                        typeid,
+                        TypeInfo {
+                            size: 8,
+                            kind: TypeKind::Enum {
+                                qualifier: name.to_string(),
+                                variants: variants
+                                    .iter()
+                                    .map(|(k, v)| (k.to_string(), *v))
+                                    .collect(),
+                            },
+                        },
+                    );
                 }
                 Item::Function(FnDef { name, .. }) | Item::ForwardDecl { name, .. } => {
                     let mut h = FxHasher::default();
@@ -511,6 +536,7 @@ impl<'s, 'e> Resolver<'e> {
                             fields,
                         }
                     }
+                    Item::Enum { name, variants } => Item::Enum { name, variants },
                     Item::Impl {
                         struct_name,
                         functions,
@@ -695,18 +721,61 @@ impl<'s, 'e> Resolver<'e> {
     ) -> Expression<'s, TypeId> {
         let Expression {
             inner,
-            typeid: typ,
+            typeid,
             span,
         } = expr;
 
-        let typ = typ.map(|(typ, span)| self.resolve_type(mangled_path, imports, typ, span));
+        let mut typeid =
+            typeid.map(|(typ, span)| self.resolve_type(mangled_path, imports, typ, span));
 
         let inner = match inner {
             ExprInner::Const(num, typ) => ExprInner::Const(num, typ),
             ExprInner::Character(ch) => ExprInner::Character(ch),
             ExprInner::String(string) => ExprInner::String(string),
             ExprInner::Bool(boo) => ExprInner::Bool(boo),
-            ExprInner::Ident(var) => ExprInner::Ident(var),
+            ExprInner::EnumVariant(value) => ExprInner::EnumVariant(value),
+            ExprInner::Ident(var) => {
+                if var.contains("::") {
+                    let (to_resolve, member) = var.rsplit_once("::").unwrap();
+                    let enum_typeid = self.try_resolve_type(
+                        mangled_path,
+                        imports,
+                        ParsedType::Struct(to_resolve),
+                        span.clone(),
+                    );
+
+                    if let Ok(enum_typeid) = enum_typeid
+                        && let Some(TypeKind::Enum {
+                            qualifier,
+                            variants,
+                        }) = &self.types.try_get(enum_typeid).map(|ti| &ti.kind)
+                    {
+                        let value = variants
+                            .iter()
+                            .find_map(|(n, v)| if n == member { Some(*v) } else { None })
+                            .unwrap_or_else(|| {
+                                self.err_ctx
+                                    .error(span.clone())
+                                    .with_message("unknown enum variant")
+                                    .with_label(
+                                        span.clone(),
+                                        format!("enum {} has no variant '{}'", qualifier, member),
+                                    )
+                                    .report();
+
+                                0
+                            });
+
+                        typeid = Some(enum_typeid);
+
+                        ExprInner::EnumVariant(value)
+                    } else {
+                        ExprInner::Ident(var)
+                    }
+                } else {
+                    ExprInner::Ident(var)
+                }
+            }
             ExprInner::Pointer(var) => ExprInner::Pointer(var),
             ExprInner::Deref(var, _) => {
                 ExprInner::Deref(Box::new(self.expression(mangled_path, imports, *var)), None)
@@ -727,6 +796,11 @@ impl<'s, 'e> Resolver<'e> {
                 Box::new(self.expression(mangled_path, imports, *lhs)),
                 Box::new(self.expression(mangled_path, imports, *rhs)),
                 logical_op,
+            ),
+            ExprInner::Bitwise(lhs, rhs, op) => ExprInner::Bitwise(
+                Box::new(self.expression(mangled_path, imports, *lhs)),
+                Box::new(self.expression(mangled_path, imports, *rhs)),
+                op,
             ),
             ExprInner::Not(expr) => {
                 ExprInner::Not(Box::new(self.expression(mangled_path, imports, *expr)))
@@ -778,7 +852,7 @@ impl<'s, 'e> Resolver<'e> {
 
         Expression {
             inner,
-            typeid: typ,
+            typeid,
             span,
         }
     }
@@ -873,23 +947,44 @@ impl<'s, 'e> Resolver<'e> {
         typ: ParsedType<'s>,
         span: Span,
     ) -> TypeId {
+        match self.try_resolve_type(mangled_path, imports, typ, span.clone()) {
+            Ok(typeid) => typeid,
+            Err(typename) => {
+                self.err_ctx
+                    .error(span.clone())
+                    .with_message(format!("unknown type {}", typename))
+                    .with_label(span, "what is this?")
+                    .report();
+
+                TypeId(0)
+            }
+        }
+    }
+
+    fn try_resolve_type(
+        &mut self,
+        mangled_path: &str,
+        imports: &[(&str, Span)],
+        typ: ParsedType<'s>,
+        span: Span,
+    ) -> Result<TypeId, &'s str> {
         match typ {
-            ParsedType::Primitive(_) => TypeId::from_parsed(&typ),
+            ParsedType::Primitive(_) => Ok(TypeId::from_parsed(&typ)),
             ParsedType::Pointer(value_type) => {
                 let value_typeid = self.resolve_type(mangled_path, imports, *value_type, span);
-                self.types.ptr_type_to(value_typeid)
+                Ok(self.types.ptr_type_to(value_typeid))
             }
             ParsedType::Struct(typename) => {
                 let local_typepath = format!("{}::{}", mangled_path, typename);
 
                 let local_typeid = TypeId::from_parsed(&ParsedType::Struct(&local_typepath));
                 if self.known_typeids.contains(&local_typeid) {
-                    return local_typeid;
+                    return Ok(local_typeid);
                 }
 
                 let absolute_typeid = TypeId::from_parsed(&ParsedType::Struct(typename));
                 if self.known_typeids.contains(&absolute_typeid) {
-                    return absolute_typeid;
+                    return Ok(absolute_typeid);
                 }
 
                 for (import, _) in imports {
@@ -898,18 +993,11 @@ impl<'s, 'e> Resolver<'e> {
 
                         assert!(self.known_typeids.contains(&import_typeid));
 
-                        return import_typeid;
+                        return Ok(import_typeid);
                     }
                 }
 
-                self.err_ctx
-                    .error(span.clone())
-                    .with_message(format!("unknown type {}", typename))
-                    .with_label(span, "what is this?")
-                    .report();
-
-                TypeId(0)
-                // panic!("type {} does not exist as '{}'", typename, local_typepath)
+                Err(typename)
             }
         }
     }

@@ -234,6 +234,11 @@ pub enum Operation {
         b: VirtualReg,
         dest: VirtualReg,
     },
+    And {
+        a: VirtualReg,
+        b: VirtualReg,
+        dest: VirtualReg,
+    },
     Negate {
         val: VirtualReg,
         dest: VirtualReg,
@@ -317,7 +322,8 @@ impl Operation {
             | Operation::Subtract { a, b, dest }
             | Operation::Multiply { a, b, dest }
             | Operation::Divide { a, b, dest }
-            | Operation::Modulo { a, b, dest } => {
+            | Operation::Modulo { a, b, dest }
+            | Operation::And { a, b, dest } => {
                 push(Some(*a));
                 push(Some(*b));
                 assigned = Some(*dest);
@@ -568,6 +574,10 @@ impl<'s> fmt::Display for IR<'s> {
                         }
                         Operation::Modulo { a, b, dest } => {
                             writeln!(f, "    {} = {} % {}", dest, a, b)?
+                        }
+
+                        Operation::And { a, b, dest } => {
+                            writeln!(f, "    {} = {} & {}", dest, a, b)?
                         }
 
                         Operation::Not { val, dest } => writeln!(f, "    {} = not {}", dest, val)?,

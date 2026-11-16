@@ -288,7 +288,6 @@ pub fn allocate(
             Inst::BeginFnCall {
                 reserved_stack_size,
             } => {
-                println!("\nBeginFnCall");
                 for (vreg, reg) in vreg_map.iter() {
                     regs_in_use.remove(reg);
                     free_regs_on_fn_call_end.push(*reg);
@@ -296,7 +295,6 @@ pub fn allocate(
                     let size = *size_map.get(vreg).unwrap();
 
                     let slot = stack.alloc_or_get(*vreg);
-                    println!("  {} / {:?} => {}", vreg, reg, slot);
                     let offset = slot_imm(slot, size);
 
                     final_insts.push((

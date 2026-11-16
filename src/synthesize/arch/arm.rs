@@ -369,6 +369,10 @@ impl ProcedureGen {
                         ]);
                     }
 
+                    Op::And { a, b, dest } => {
+                        proc.emit(Inst::And { a, b, dest });
+                    }
+
                     Op::Not { val, dest } => proc.emit_many([
                         Inst::CmpImm {
                             val,

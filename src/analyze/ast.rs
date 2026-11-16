@@ -42,6 +42,7 @@ impl<'s, T> AST<'s, T> {
                 Item::Function(FnDef { name, .. })
                 | Item::ForwardDecl { name, .. }
                 | Item::Struct { name, .. }
+                | Item::Enum { name, .. }
                 | Item::Impl {
                     struct_name: name, ..
                 } => *name = Cow::Owned(format!("{}::{}", lib, name)),
@@ -72,6 +73,10 @@ pub enum Item<'s, T> {
         name: Cow<'s, str>,
         decl_span: Span,
         fields: Vec<(&'s str, T, Span)>,
+    },
+    Enum {
+        name: Cow<'s, str>,
+        variants: Vec<(&'s str, u64)>,
     },
     Impl {
         struct_name: Cow<'s, str>,
@@ -158,6 +163,7 @@ pub enum ExprInner<'s, T> {
     Character(char),
     String(String),
     Bool(bool),
+    EnumVariant(u64),
 
     Ident(&'s str),
     Pointer(&'s str),
@@ -176,6 +182,7 @@ pub enum ExprInner<'s, T> {
         Option<Sign>,
     ),
     Logical(Box<Expression<'s, T>>, Box<Expression<'s, T>>, LogicalOp),
+    Bitwise(Box<Expression<'s, T>>, Box<Expression<'s, T>>, BitwiseOp),
     Not(Box<Expression<'s, T>>),
     Negate(Box<Expression<'s, T>>),
 
@@ -229,6 +236,11 @@ pub enum CompareOp {
 pub enum LogicalOp {
     And,
     Or,
+}
+
+#[derive(Debug, Clone, Copy)]
+pub enum BitwiseOp {
+    And,
 }
 
 impl<'s, T: Debug> Debug for Expression<'s, T> {

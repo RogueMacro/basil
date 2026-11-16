@@ -1,7 +1,7 @@
 use ux::u12;
 
 use crate::{
-    ir::VregSize,
+    ir::{Condition, VregSize},
     synthesize::arch::{
         Assembler,
         arm::{
@@ -58,6 +58,23 @@ pub fn open(asm: &mut ArmAssembler) {
     load_arg(asm, 0, Reg::X0);
     load_arg(asm, 1, Reg::X1);
     syscall(asm, SyscallType::Open);
+    asm.emit_many([
+        Inst::Mov {
+            src: EitherReg::Phys(Reg::X0),
+            dest: EitherReg::Phys(Reg::X1),
+        },
+        Inst::Movk {
+            shift: ImmShift16::L48,
+            value: 0x8000,
+            dest: Reg::X1,
+        },
+        Inst::Csel {
+            cond: Condition::UnsignedGreaterOrEqual,
+            if_true: Reg::X1,
+            if_false: Reg::X0,
+            dest: Reg::X0,
+        },
+    ]);
     asm.emit(Inst::Ret { value: Reg::X0 });
 }
 

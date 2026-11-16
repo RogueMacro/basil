@@ -7,8 +7,8 @@ use std::{
 use crate::{
     analyze::{
         ast::{
-            ArithmeticOp, Assignable, ExprInner, Expression, FnDef, FnPtr, IfElse, Item as AstItem,
-            LogicalOp, Statement,
+            ArithmeticOp, Assignable, BitwiseOp, ExprInner, Expression, FnDef, FnPtr, IfElse,
+            Item as AstItem, LogicalOp, Statement,
         },
         semantics::{
             Analyzer, ValidAST,
@@ -90,16 +90,11 @@ impl<'s> IR<'s> {
                     ir.static_mem.alloc(name, typeid, type_size);
                 }
 
-                AstItem::Struct { .. } => {}
+                AstItem::Struct { .. } | AstItem::Enum { .. } => {}
 
                 AstItem::ForwardDecl { .. } | AstItem::ExternLib(_) => {}
             }
         }
-
-        // if let Err(dupes) = crate::ir::ssa::verify_ssa(&ir) {
-        //     println!("{}", ir);
-        //     panic!("ir is not ssa, duplicates: {:?}", dupes);
-        // }
 
         println!("{}", ir);
 
@@ -512,6 +507,7 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 SourceVal::String(str_id)
             }
             ExprInner::Bool(b) => SourceVal::Immediate(b as u64),
+            ExprInner::EnumVariant(value) => SourceVal::Immediate(value),
 
             ExprInner::Ident(var) => {
                 let dest = self.get_vreg(type_size);
@@ -654,6 +650,28 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 SourceVal::VReg(dest)
             }
 
+            ExprInner::Bitwise(lhs, rhs, op) => {
+                let lhs = self.flatten_expr(*lhs, None);
+                let lhs = self.src_to_vreg(lhs);
+
+                let rhs = self.flatten_expr(*rhs, None);
+                let rhs = self.src_to_vreg(rhs);
+
+                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
+
+                let inst = match op {
+                    BitwiseOp::And => Op::And {
+                        a: lhs,
+                        b: rhs,
+                        dest,
+                    },
+                };
+
+                self.block_ops.push(inst);
+
+                SourceVal::VReg(dest)
+            }
+
             ExprInner::Not(expr) => {
                 let val = self.flatten_expr(*expr, dest);
                 let val = self.src_to_vreg(val);
@@ -765,7 +783,11 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                     })
                     .collect();
 
-                let dest = dest.unwrap_or_else(|| self.get_vreg(type_size));
+                let dest = if type_size.to_bytes() > 0 {
+                    Some(dest.unwrap_or_else(|| self.get_vreg(type_size)))
+                } else {
+                    None
+                };
 
                 let FnPtr::Named(function) = function else {
                     panic!()
@@ -774,10 +796,10 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                 self.block_ops.push(Op::Call {
                     function: function.into_owned(),
                     args,
-                    dest: Some(dest),
+                    dest,
                 });
 
-                SourceVal::VReg(dest)
+                dest.map(SourceVal::VReg).unwrap_or(SourceVal::Immediate(0))
             }
 
             ExprInner::Construct {
@@ -787,12 +809,9 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
             } => {
                 // TODO: get rid of VregSize, just use u32 instead
 
-                println!("- CONSTRUCT TYPE {} -", self.analyzer.types.display(typeid));
-
                 let type_size = VregSize::Bytes(self.analyzer.types.size_of(typeid));
 
                 if !heap {
-                    println!("=> heap: false");
                     let dest = dest.unwrap_or_else(|| {
                         let vreg = self.get_vreg(type_size);
                         self.stack.insert(vreg, self.stack_size);
@@ -800,17 +819,13 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
                         vreg
                     });
                     assert!(self.size_map.get(&dest).unwrap().to_bytes() == type_size.to_bytes());
-                    println!("=> vreg: {}", dest);
-                    println!("=> size: {}", type_size.to_bytes());
 
                     let offset = *self.stack.get(&dest).unwrap();
-                    println!("=> stack offset: {}", offset);
 
                     self.flatten_construct(typeid, fields, ConstructPlacement::Stack { offset });
 
                     SourceVal::VReg(dest)
                 } else {
-                    println!("=> heap: true");
                     let size_vreg = self.get_vreg(VregSize::Doubleword);
                     let ptr_vreg = dest.unwrap_or_else(|| self.get_vreg(VregSize::Doubleword));
 
@@ -852,12 +867,6 @@ impl<'ir, 'a, 's> BlockBuilder<'ir, 'a, 's> {
     ) {
         for (name, expr) in fields {
             let field_offset = self.analyzer.types.offset_of_member(typeid, name).unwrap() as u32;
-            println!(
-                "=> member (+{}): {}  {}",
-                field_offset,
-                name,
-                self.analyzer.types.display(expr.typeid.unwrap())
-            );
 
             match expr.inner {
                 ExprInner::Construct {

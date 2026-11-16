@@ -3,8 +3,8 @@ use std::{borrow::Cow, ops::Range, path::PathBuf, rc::Rc};
 use crate::analyze::{
     Error, ErrorCode, ErrorContext, Span,
     ast::{
-        AST, ArithmeticOp, Assignable, CompareOp, ExprInner, Expression, FnDef, FnPtr, IfElse,
-        Item, LogicalOp, ParsedType, Statement,
+        AST, ArithmeticOp, Assignable, BitwiseOp, CompareOp, ExprInner, Expression, FnDef, FnPtr,
+        IfElse, Item, LogicalOp, ParsedType, Statement,
     },
     lex::{
         Tokens,
@@ -64,6 +64,7 @@ impl<'e, 's> Parser<'e, 's> {
                             | Keyword::Use
                             | Keyword::Package
                             | Keyword::Module
+                            | Keyword::Enum
                     ),
                     _
                 ))
@@ -82,6 +83,7 @@ impl<'e, 's> Parser<'e, 's> {
             Keyword::Extern => self.parse_extern().map(Some),
             Keyword::Memory => self.parse_memory().map(Some),
             Keyword::Struct => self.parse_struct().map(Some),
+            Keyword::Enum => self.parse_enum().map(Some),
             Keyword::Impl => self.parse_impl().map(Some),
             Keyword::Use => {
                 let path_start = self.tokens.cur_token_start();
@@ -234,6 +236,71 @@ impl<'e, 's> Parser<'e, 's> {
             name: Cow::Borrowed(name),
             decl_span,
             fields,
+        })
+    }
+
+    fn parse_enum(&mut self) -> Result<Item<'s, (ParsedType<'s>, Span)>, Error> {
+        let (token, range) = self.expect_take_current()?;
+        let Token::Ident(name) = token else {
+            let span = self.span(range);
+            return Err(self
+                .err_ctx
+                .error(span.clone())
+                .with_message("invalid enum definition")
+                .with_label(span, "expected identifier")
+                .finish());
+        };
+
+        self.expect_token(Token::LeftCurlyBracket, "expected opening brace")?;
+
+        let mut variants = Vec::new();
+        let mut value_counter = 0;
+        let mut first = true;
+        while !matches!(self.tokens.current(), Some((Token::RightCurlyBracket, _))) {
+            if !first {
+                self.expect_token(Token::Comma, "expected comma")?;
+            }
+
+            let (token, range) = self.expect_take_current()?;
+            let Token::Ident(variant) = token else {
+                let span = self.span(range);
+                return Err(self
+                    .err_ctx
+                    .error(span.clone())
+                    .with_message("invalid enum variant")
+                    .with_label(span, "expected variant identifier")
+                    .finish());
+            };
+
+            if matches!(self.tokens.current(), Some((Token::Assign(_), _))) {
+                self.tokens.move_one();
+
+                let (token, range) = self.expect_take_current()?;
+                let Token::Number(value, primitive) = token else {
+                    let span = self.span(range);
+                    return Err(self
+                        .err_ctx
+                        .error(span.clone())
+                        .with_message("invalid enum variant")
+                        .with_label(span, "expected number")
+                        .finish());
+                };
+
+                assert!(primitive.is_none());
+
+                value_counter = value;
+            }
+
+            variants.push((variant, value_counter));
+            value_counter += 1;
+            first = false;
+        }
+
+        self.expect_token(Token::RightCurlyBracket, "expected closing brace")?;
+
+        Ok(Item::Enum {
+            name: Cow::Borrowed(name),
+            variants,
         })
     }
 
@@ -699,8 +766,13 @@ impl<'e, 's> Parser<'e, 's> {
     ) -> Result<Expression<'s, (ParsedType<'s>, Span)>, Error> {
         let mut lhs = self.parse_single_expr(allow_construct)?;
 
-        if let Some((Token::Operator(op), _)) = self.tokens.current() {
-            let mut op = *op;
+        let op = match self.tokens.current() {
+            Some((Token::Operator(op), _)) => Some(*op),
+            Some((Token::Reference, _)) => Some(Operator::BitwiseAnd),
+             _ => None,
+        };
+
+        if let Some(mut op) = op  {
             self.tokens.move_one();
 
             // if op == Operator::Dot {
@@ -805,6 +877,10 @@ impl<'e, 's> Parser<'e, 's> {
             ),
             Operator::And => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::And),
             Operator::Or => ExprInner::Logical(Box::new(lhs), Box::new(rhs), LogicalOp::Or),
+
+            Operator::BitwiseAnd => {
+                ExprInner::Bitwise(Box::new(lhs), Box::new(rhs), BitwiseOp::And)
+            }
 
             Operator::Not => unreachable!(),
             // Operator::Dot => {
@@ -1094,9 +1170,18 @@ impl<'e, 's> Parser<'e, 's> {
                     .unexpected_token(span, "expected field name")
                     .finish());
             };
-            self.expect_token(Token::Colon, "expected colon")?;
 
-            let init_expr = self.parse_expr(true)?;
+            let init_expr = if matches!(self.tokens.current(), Some((Token::Colon, _))) {
+                self.tokens.move_one();
+                self.parse_expr(true)?
+            } else {
+                Expression {
+                    inner: ExprInner::Ident(field),
+                    typeid: None,
+                    span: self.span(range),
+                }
+            };
+
             fields.push((field, init_expr));
 
             first = false;

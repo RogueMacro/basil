@@ -137,15 +137,10 @@ impl<'s> Analyzer<'s> {
                         }
                     }
                 }
-                Item::ExternLib(_) => {}
                 Item::MemorySegment { name, typ } => {
                     self.globals.insert(name, *typ);
                 }
-                Item::Struct {
-                    name,
-                    decl_span,
-                    fields,
-                } => {}
+                Item::ExternLib(_) | Item::Struct { .. } | Item::Enum { .. } => {}
             }
         }
 
@@ -184,7 +179,7 @@ impl<'s> Analyzer<'s> {
 
                 true
             }
-            Item::Struct { .. } | Item::MemorySegment { .. } => true,
+            Item::Struct { .. } | Item::MemorySegment { .. } | Item::Enum { .. } => true,
             Item::ForwardDecl { .. } | Item::ExternLib(_) => false,
         });
 
@@ -274,6 +269,7 @@ impl<'s> Analyzer<'s> {
             Item::ForwardDecl { .. } => {}
             Item::ExternLib(_lib) => (), // TODO: maybe?
             Item::MemorySegment { .. } => {}
+            Item::Enum { .. } => {}
             Item::Struct {
                 name,
                 decl_span,
@@ -550,6 +546,7 @@ impl<'s> Analyzer<'s> {
             ExprInner::Character(_) => Some(TypeId::char()),
             ExprInner::String(_) => Some(TypeId::char_ptr()),
             ExprInner::Bool(_) => Some(TypeId::bool()),
+            ExprInner::EnumVariant(_) => expr.typeid,
 
             ExprInner::Ident(var) => self.check_var(var, &expr.span),
             ExprInner::Pointer(var) => self
@@ -592,6 +589,28 @@ impl<'s> Analyzer<'s> {
                         .with_message("mismatched types")
                         .with_label(expr1.span.clone(), type1_msg)
                         .with_label(expr2.span.clone(), type2_msg)
+                        .report();
+                }
+
+                None
+            }
+
+            ExprInner::Bitwise(lhs, rhs, _op) => {
+                if let Some(type1) = self.expression(lhs, hint)
+                    && let Some(type2) = self.expression(rhs, Some(type1))
+                {
+                    if type1 == type2 {
+                        expr.typeid = Some(type1);
+                        return Some(type1);
+                    }
+
+                    let type1_msg = format!("this is of type {}", self.types.display(type1));
+                    let type2_msg = format!("this is of type {}", self.types.display(type2));
+                    self.err_ctx
+                        .error(combine_span(&lhs.span, &rhs.span))
+                        .with_message("mismatched types")
+                        .with_label(lhs.span.clone(), type1_msg)
+                        .with_label(rhs.span.clone(), type2_msg)
                         .report();
                 }
 
@@ -718,6 +737,8 @@ impl<'s> Analyzer<'s> {
                 if let Some(expr_type) = self.expression(cast_from, None) {
                     let expr_type_is_ptr = self.types.get(expr_type).is_ptr();
                     let cast_to_is_ptr = self.types.get(*cast_to).is_ptr();
+                    let expr_type_is_enum =
+                        matches!(self.types.get(expr_type).kind, TypeKind::Enum { .. });
 
                     if self.type_casts.contains(&(expr_type, *cast_to))
                         || self.type_casts.contains(&(*cast_to, expr_type))
@@ -726,6 +747,7 @@ impl<'s> Analyzer<'s> {
                             && (*cast_to == TypeId::i64() || *cast_to == TypeId::u64()))
                         || ((expr_type == TypeId::i64() || expr_type == TypeId::u64())
                             && cast_to_is_ptr)
+                        || (expr_type_is_enum && *cast_to == TypeId::i64())
                     {
                         expr.typeid = Some(*cast_to);
                     } else {

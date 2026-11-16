@@ -1,17 +1,37 @@
-
-// enum OpenFlags {
-//     ReadOnly = 0,
-//     WriteOnly = 1
-//     ReadWrite = 2
-// }
-
 struct File {
     handle: i64
 }
 
 impl File {
-    fn open(filename: *char) -> File {
-        h := 1;
-        return File { handle: h };
+    fn open(filename: *char, flags: OpenFlags) -> *File {
+        if flags != OpenFlags::Read {
+            std::panic("files only support read at this point");
+        }
+
+        handle := std::syscall::open(filename, flags as i64);
+        if handle < 0 {
+            error := handle & 255;
+            if error == FileError::NotFound as i64 {
+                std::panic("could not find file");
+            } else {
+                std::panic("could not open file");
+            }
+        }
+
+        return [File] { handle };
     }
+
+    fn close() {}
+
+    fn read() {}
+}
+
+enum OpenFlags {
+    Read,
+    Write,
+    ReadWrite
+}
+
+enum FileError {
+    NotFound = 2
 }
