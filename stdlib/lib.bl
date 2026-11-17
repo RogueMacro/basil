@@ -171,8 +171,8 @@ fn copy(src: *i8, dest: *i8, len: u64) {
 }
 
 fn panic(message: *char) {
-    std::fmt::cprint("program panicked with message '");
-    std::fmt::cprint(message);
-    std::fmt::cprint("'\n");
+    std::syscall::write(2, "program panicked with message '", 31);
+    std::syscall::write(2, message, std::strlen(message));
+    std::syscall::write(2, "'\n", 2);
     std::syscall::exit(-1);
 }

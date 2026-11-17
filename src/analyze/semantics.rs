@@ -148,17 +148,17 @@ impl<'s> Analyzer<'s> {
             self.item(item);
         }
 
-        let mut used_functions: HashSet<String> = HashSet::new();
-        used_functions.insert(self.main_fn.clone());
-        used_functions.insert(crate::ir::codegen::ALLOC_FN.to_owned());
-        used_functions.insert("std::alloc::create_arena".to_owned());
+        let mut used_functions: HashSet<&str> = HashSet::new();
+        used_functions.insert(&self.main_fn);
+        used_functions.insert(crate::ir::codegen::ALLOC_FN);
+        used_functions.insert("std::panic");
 
-        let mut queue: Vec<&str> = vec![&self.main_fn];
+        let mut queue: Vec<&str> = used_functions.iter().copied().collect();
         while let Some(&func) = queue.first() {
             if let Some(iter) = self.function_calls.get(func) {
                 for callee in iter {
-                    if !used_functions.contains(callee) {
-                        used_functions.insert(callee.to_owned());
+                    if !used_functions.contains::<str>(callee) {
+                        used_functions.insert(callee);
                         queue.push(callee);
                     }
                 }
@@ -174,7 +174,7 @@ impl<'s> Analyzer<'s> {
                 functions,
             } => {
                 functions.retain(|fndef| {
-                    used_functions.contains(&format!("{}::{}", struct_name, fndef.name))
+                    used_functions.contains::<str>(&format!("{}::{}", struct_name, fndef.name))
                 });
 
                 true

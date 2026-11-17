@@ -13,19 +13,17 @@ fn alloc(bytes: u64) -> *i8 {
     block := ARENA;
     while block != 0 as *Block {
         if block.size == bytes {
-            std::panic("1");
             return ((block as u64) + sizeof(Block)) as *i8;
         } else if block.size > (bytes + sizeof(Block) + 8) {
             split_off := ((block as u64) + block.size - bytes) as *Block;
             split_off.size = bytes;
             block.size -= sizeof(Block) + bytes;
-            std::fmt::cprint("test\n");
             return ((split_off as u64) + sizeof(Block)) as *i8;
         }
 
         block = block.next;
     }
-    std::fmt::cprint("memory block not found, creating new\n");
+
     block = create_arena(bytes);
     if block.size > (sizeof(Block) + bytes + 8) {
         split_off2 := ((block as u64) + sizeof(Block) + bytes) as *Block;
@@ -37,6 +35,12 @@ fn alloc(bytes: u64) -> *i8 {
     }
 
     return (block as u64 + sizeof(Block)) as *i8;
+}
+
+fn free(ptr: *i8) {
+    block := (ptr as u64 - sizeof(Block)) as *Block;
+    block.next = ARENA;
+    ARENA = block;
 }
 
 fn create_arena(min_size: u64) -> *Block {
